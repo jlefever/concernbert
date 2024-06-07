@@ -1,0 +1,43 @@
+[project]
+name = "entitybert"
+version = "0.0.1"
+description = "Source code embeddings from finetuned BERT-based models"
+authors = [
+    { name = "Jason Lefever", email = "jason.titus.lefever@gmail.com" }
+]
+dependencies = [
+    "pandas>=2.2.2",
+    "numpy>=1.26.4",
+    "torch>=2.3.0",
+    "transformers[torch]>=4.41.0",
+    "sentence-transformers>=2.7.0",
+    "pyarrow>=16.1.0",
+    "click>=8.1.7",
+]
+readme = "README.md"
+requires-python = ">= 3.12"
+classifiers = [
+    "Development Status :: 3 - Alpha",
+    "License :: OSI Approved :: Apache Software License",
+    "Programming Language :: Python :: 3.12",
+]
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.rye]
+managed = true
+dev-dependencies = [
+    "jupyter>=1.0.0",
+    "matplotlib>=3.9.0",
+    "umap-learn>=0.5.6",
+    "seaborn>=0.13.2",
+    "hdbscan>=0.8.36",
+]
+
+[tool.hatch.metadata]
+allow-direct-references = true
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/entitybert"]

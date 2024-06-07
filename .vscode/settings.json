@@ -1,0 +1,26 @@
+{
+    "jupyter.notebookFileRoot": "${workspaceRoot}",
+    "python.analysis.typeCheckingMode": "strict",
+    "python.analysis.inlayHints.functionReturnTypes": true,
+    "cSpell.words": [
+        "bigcode",
+        "cochange",
+        "entitybert",
+        "eucledian",
+        "finetuned",
+        "isin",
+        "iterrows",
+        "kmeans",
+        "linalg",
+        "loguru",
+        "Matryoshka",
+        "ndarray",
+        "nmis",
+        "pbar",
+        "quantile",
+        "testkit",
+        "tqdm",
+        "typeshed",
+        "venv"
+    ]
+}
