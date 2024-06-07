@@ -17,7 +17,6 @@ from sentence_transformers.evaluation import SentenceEvaluator  # type: ignore
 from sklearn.cluster import KMeans
 from sklearn.metrics.cluster import normalized_mutual_info_score
 from torch.utils.data import DataLoader
-from tqdm import tqdm
 
 cosine_distance = losses.BatchHardTripletLossDistanceFunction.cosine_distance  # type: ignore
 eucledian_distance = losses.BatchHardTripletLossDistanceFunction.eucledian_distance  # type: ignore
@@ -123,7 +122,7 @@ class MyEvaluator(SentenceEvaluator):
         scores: list[float] = []
         for group_size in self._group_sizes:
             nmis: list[float] = []
-            for group_df in tqdm(self._groups[group_size]):
+            for group_df in self._groups[group_size]:
                 texts: list[str] = list(group_df["content"])  # type: ignore
                 embeddings = model.encode(texts)  # type: ignore
                 kmeans = KMeans(n_clusters=group_size, random_state=self._seed)
