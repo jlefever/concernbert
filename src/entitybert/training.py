@@ -129,10 +129,14 @@ class MyEvaluator(SentenceEvaluator):
                 texts: list[str] = list(group_df["content"])  # type: ignore
                 with torch.no_grad():
                     embeddings = model.encode(texts, show_progress_bar=False)  # type: ignore
-                kmeans = KMeans(n_clusters=group_size, random_state=self._seed)
-                pred_labels: list[int] = list(kmeans.fit(embeddings).labels_)  #  type: ignore
-                true_labels: list[str] = list(group_df["parent_id"])  # type: ignore
-                nmi = normalized_mutual_info_score(pred_labels, true_labels)
+                try:
+                    kmeans = KMeans(n_clusters=group_size, random_state=self._seed)
+                    pred_labels: list[int] = list(kmeans.fit(embeddings).labels_)  #  type: ignore
+                    true_labels: list[str] = list(group_df["parent_id"])  # type: ignore
+                    nmi = normalized_mutual_info_score(pred_labels, true_labels)
+                except Exception as e:
+                    logger.warn(f"Exception encountered during eval: {e}")
+                    continue
                 nmis.append(float(nmi))
             score = mean(nmis)
             logger.info(f"NMI-{group_size}: {score}")
