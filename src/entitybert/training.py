@@ -2,6 +2,7 @@ import configparser
 import csv
 import datetime
 import itertools as it
+import logging
 import os
 import random
 from collections import defaultdict
@@ -11,12 +12,15 @@ from pathlib import Path
 from statistics import mean
 
 import pandas as pd
+import torch
 from entitybert.sampling import MyDataset, SamplerArgs
 from sentence_transformers import SentenceTransformer, losses  # type: ignore
 from sentence_transformers.evaluation import SentenceEvaluator  # type: ignore
 from sklearn.cluster import KMeans
 from sklearn.metrics.cluster import normalized_mutual_info_score
 from torch.utils.data import DataLoader
+
+logger = logging.getLogger(__name__)
 
 cosine_distance = losses.BatchHardTripletLossDistanceFunction.cosine_distance  # type: ignore
 eucledian_distance = losses.BatchHardTripletLossDistanceFunction.eucledian_distance  # type: ignore
@@ -115,8 +119,7 @@ class MyEvaluator(SentenceEvaluator):
         epoch: int = -1,
         steps: int = -1,
     ) -> float:
-        timestamp = datetime.datetime.now().isoformat()
-        print(f"[{timestamp}] Evaluating in epoch {epoch} after {steps} steps...")
+        logger.info(f"Evaluating in epoch {epoch} after {steps} steps...")
 
         # Calculate scores
         scores: list[float] = []
@@ -124,14 +127,15 @@ class MyEvaluator(SentenceEvaluator):
             nmis: list[float] = []
             for group_df in self._groups[group_size]:
                 texts: list[str] = list(group_df["content"])  # type: ignore
-                embeddings = model.encode(texts)  # type: ignore
+                with torch.no_grad():
+                    embeddings = model.encode(texts, show_progress_bar=False)  # type: ignore
                 kmeans = KMeans(n_clusters=group_size, random_state=self._seed)
                 pred_labels: list[int] = list(kmeans.fit(embeddings).labels_)  #  type: ignore
                 true_labels: list[str] = list(group_df["parent_id"])  # type: ignore
                 nmi = normalized_mutual_info_score(pred_labels, true_labels)
                 nmis.append(float(nmi))
             score = mean(nmis)
-            print(f"NMI-{group_size}: {score}")
+            logger.info(f"NMI-{group_size}: {score}")
             scores.append(score)
 
         if output_path is None:
@@ -140,6 +144,7 @@ class MyEvaluator(SentenceEvaluator):
         # Write to CSV
         csv_path = os.path.join(output_path, self._filename)
         Path(csv_path).parent.mkdir(parents=True, exist_ok=True)
+        timestamp = datetime.datetime.now().isoformat()
         if not os.path.isfile(csv_path):
             with open(csv_path, newline="", mode="w") as f:
                 writer = csv.writer(f)
@@ -160,32 +165,32 @@ def train(args: TrainingArgs):
     if output_path.exists():
         raise RuntimeError(f"{output_path} already exists")
 
-    print("Loading train and val dataset...")
+    logger.info("Loading train and val dataset...")
     df_train = pd.read_parquet(args.dataset_train_path)
     df_val = pd.read_parquet(args.dataset_val_path)
 
-    print("Setting up evaluator...")
+    logger.info("Setting up evaluator...")
     evaluator = MyEvaluator(f"{timestamp}.csv", df_val, [2], args.val_files, args.seed)
-    print(evaluator.summary())
+    logger.info(evaluator.summary())
 
-    print("Setting up dataloader and sampler...")
+    logger.info("Setting up dataloader and sampler...")
     dataset = MyDataset(df_train)
     sampler = dataset.sampler(args.sampler_args())
-    print(sampler.summary())
+    logger.info(sampler.summary())
     dataloader = DataLoader(dataset, batch_sampler=sampler)
 
-    print("Loading fresh model...")
+    logger.info("Loading fresh model...")
     model = SentenceTransformer(args.base_model_name)
     dist = cosine_distance if args.use_cosine else eucledian_distance  # type: ignore
     train_loss = losses.BatchHardSoftMarginTripletLoss(model, dist)
     train_loss = losses.Matryoshka2dLoss(model, train_loss, [768, 512, 256, 128, 64])
-    print(f"device: {model.device}")
+    logger.info(f"device: {model.device}")
 
-    print("Checking performance before fine-tuning...")
+    logger.info("Checking performance before fine-tuning...")
     eval_dir = Path(args.models_dir, args.output_model_name, "eval")
     evaluator(model, str(eval_dir), epoch=0, steps=0)
 
-    print("Start training...")
+    logger.info("Start training...")
     model.fit(  # type: ignore
         train_objectives=[(dataloader, train_loss)],
         evaluator=evaluator,
