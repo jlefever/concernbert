@@ -138,12 +138,12 @@ class MyEvaluator(SentenceEvaluator):
                     logger.warn(f"Exception encountered during eval: {e}")
                     continue
                 nmis.append(float(nmi))
-            score = mean(nmis)
+            score = mean(nmis) if len(nmis) > 0 else 0.0
             logger.info(f"NMI-{group_size}: {score}")
             scores.append(score)
 
         if output_path is None:
-            return mean(scores)
+            return mean(scores) if len(scores) > 0 else 0.0
 
         # Write to CSV
         csv_path = os.path.join(output_path, self._filename)
@@ -158,7 +158,7 @@ class MyEvaluator(SentenceEvaluator):
             with open(csv_path, newline="", mode="a") as f:
                 writer = csv.writer(f)
                 writer.writerow([timestamp, epoch, steps] + scores)
-        return mean(scores)
+        return mean(scores) if len(scores) > 0 else 0.0
 
 
 def train(args: TrainingArgs):
