@@ -7,6 +7,7 @@ from typing import Hashable, Iterator, TypeVar
 
 import pandas as pd
 from torch.utils.data import Dataset, Sampler
+from tqdm import tqdm
 
 _T = TypeVar("_T")
 _Batch = list[_T]
@@ -126,13 +127,11 @@ class MyInputExample:
 
 class MySampler(Sampler[list[int]]):
     def __init__(self, epochs: list[_Epoch[Point[int, int]]]):
-        if len(epochs) == 0:
-            raise ValueError("must have at least one epoch")
-        if any(len(e) == 0 for e in epochs):
-            raise ValueError("all epochs must have at least one batch")
+        # Assumes:
+        # - There is at least one epoch
+        # - All epochs have at least one batch
+        # - All batches are the same size
         batch_size = len(epochs[0][0])
-        if not all(all(len(b) == batch_size for b in e) for e in epochs):
-            raise ValueError("batches must be the same size")
         self._epochs = epochs
         self._n_epochs = len(epochs)
         self._n_batches_per_epoch = min(len(e) for e in self._epochs)
@@ -222,7 +221,7 @@ class MyDataset(Dataset[MyInputExample]):
         epochs: list[_Epoch[Point[int, int]]] = []
         for _ in range(args.epochs):
             sampler = _MultiBatchSampler[int, int]()
-            for ix, row in self._df.iterrows():  # type: ignore
+            for ix, row in tqdm(self._df.iterrows()):  # type: ignore
                 label = self._labels.index(str(row["parent_id"]))  # type: ignore
                 db_path = str(row["db_path"])  # type: ignore
                 sampler.insert(int(ix), label, db_path)  # type: ignore
