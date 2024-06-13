@@ -1,3 +1,4 @@
+import itertools as it
 import logging
 import math
 import random
@@ -76,32 +77,31 @@ class _FileDto:
 
 def _select_files(cursor: Cursor) -> Iterable[_FileDto]:
     cursor.execute(_SELECT_FILES)
-    for row in cursor.fetchall():
-        yield _FileDto(**row)
+    yield from (_FileDto(**r) for r in cursor.fetchall())
 
 
-_SELECT_DEPS = """
+_SELECT_FILE_DEPS = """
     SELECT DISTINCT SF.filename AS src, TF.filename AS tgt
     FROM deps D
     JOIN temp.filenames SF ON SF.entity_id = D.src
     JOIN temp.filenames TF ON TF.entity_id = D.tgt
+    WHERE SF.filename <> TF.filename
     ORDER BY SF.filename, TF.filename
 """
 
 
 @dataclass
-class _DepDto:
+class _FileDepDto:
     src: str
     tgt: str
 
 
-def _select_deps(cursor: Cursor) -> Iterable[_DepDto]:
-    cursor.execute(_SELECT_DEPS)
-    for row in cursor.fetchall():
-        yield _DepDto(**row)
+def _select_file_deps(cursor: Cursor) -> Iterable[_FileDepDto]:
+    cursor.execute(_SELECT_FILE_DEPS)
+    yield from (_FileDepDto(**r) for r in cursor.fetchall())
 
 
-_SELECT_CHANGES = """
+_SELECT_FILE_CHANGES = """
     SELECT DISTINCT F.filename, HEX(C.commit_id) AS commit_id
     FROM changes C
     JOIN temp.filenames F ON F.simple_id = C.simple_id
@@ -109,19 +109,19 @@ _SELECT_CHANGES = """
 
 
 @dataclass
-class _ChangeDto:
+class _FileChangeDto:
     filename: str
     commit_id: str
 
 
-def _select_changes(cursor: Cursor) -> Iterable[_ChangeDto]:
-    cursor.execute(_SELECT_CHANGES)
-    for row in cursor.fetchall():
-        yield _ChangeDto(**row)
+def _select_file_changes(cursor: Cursor) -> Iterable[_FileChangeDto]:
+    cursor.execute(_SELECT_FILE_CHANGES)
+    yield from (_FileChangeDto(**r) for r in cursor.fetchall())
 
 
 _SELECT_ENTITIES = """
     SELECT
+        F.filename,
         HEX(E.id) AS id,
         NULLIF(HEX(parent_id), '') AS parent_id,
         E.name,
@@ -134,12 +134,13 @@ _SELECT_ENTITIES = """
         E.end_column
     FROM entities E
     JOIN filenames F ON F.entity_id = E.id
-    WHERE F.filename = ?
+    ORDER BY F.filename, E.parent_id, E.id
 """
 
 
 @dataclass
-class _EntityDto:
+class EntityDto:
+    filename: str
     id: str
     parent_id: str | None
     name: str
@@ -155,27 +156,48 @@ class _EntityDto:
         return content[self.start_byte : self.end_byte].decode()
 
 
-def _select_entities(cursor: Cursor, filename: str) -> Iterable[_EntityDto]:
-    cursor.execute(_SELECT_ENTITIES, (filename,))
-    for row in cursor.fetchall():
-        yield _EntityDto(**row)
+def _select_entities(cursor: Cursor) -> Iterable[EntityDto]:
+    cursor.execute(_SELECT_ENTITIES)
+    yield from (EntityDto(**r) for r in cursor.fetchall())
 
 
 _SELECT_CONTENTS = """
-    SELECT C.content
+    SELECT E.name AS filename, C.content
     FROM entities E
     JOIN contents C ON C.content_id = E.content_id
-    WHERE E.kind = 'File' AND E.name = ?
+    WHERE E.kind = 'File'
+    ORDER BY E.name
+"""
+
+_SELECT_DEPS = """
+    SELECT DISTINCT
+        HEX(D.src) AS src,
+        HEX(D.tgt) AS tgt
+    FROM deps D
+    WHERE D.src <> D.tgt
+    ORDER BY D.src, D.tgt
 """
 
 
 @dataclass
+class _DepDto:
+    src: str
+    tgt: str
+
+
+def _select_deps(cursor: Cursor) -> Iterable[_DepDto]:
+    cursor.execute(_SELECT_DEPS)
+    yield from (_DepDto(**r) for r in cursor.fetchall())
+
+
+@dataclass
 class _ContentDto:
+    filename: str
     content: bytes
 
 
-def _select_contents(cursor: Cursor, filename: str) -> Iterable[_ContentDto]:
-    cursor.execute(_SELECT_CONTENTS, (filename,))
+def _select_contents(cursor: Cursor) -> Iterable[_ContentDto]:
+    cursor.execute(_SELECT_CONTENTS)
     for row in cursor.fetchall():
         row["content"] = row["content"].encode()
         yield _ContentDto(**row)
@@ -227,9 +249,9 @@ class _FileGraph:
         graph = _FileGraph()
         for file in _select_files(cursor):
             graph.add_file(file)
-        for dep in _select_deps(cursor):
+        for dep in _select_file_deps(cursor):
             graph.add_dep(dep.src, dep.tgt)
-        for change in _select_changes(cursor):
+        for change in _select_file_changes(cursor):
             graph.add_change(change.filename, change.commit_id)
         return graph
 
@@ -303,26 +325,38 @@ class EntityTree:
     def __init__(self, filename: str, content: bytes):
         self._filename = filename
         self._content = content
-        self._entities: dict[str, _EntityDto] = dict()
+        self._entities: dict[str, EntityDto] = dict()
         self._children: defaultdict[str | None, list[str]] = defaultdict(list)
 
     @staticmethod
-    def load_from_db(cursor: Cursor, filename: str) -> "EntityTree":
-        contents = list(_select_contents(cursor, filename))
-        if len(contents) != 1:
-            raise RuntimeError(
-                f"found {len(contents)} contents. Expected 1. ({filename})"
-            )
-        tree = EntityTree(filename, contents[0].content)
-        for entity in _select_entities(cursor, filename):
-            tree._add_entity(entity)
-        return tree
+    def load_from_db(cursor: Cursor) -> dict[str, "EntityTree"]:
+        contents: dict[str, bytes] = dict()
+        trees: dict[str, EntityTree] = dict()
+        # Collect contents
+        groups = it.groupby(_select_contents(cursor), key=lambda x: x.filename)
+        for filename, group in groups:
+            group = list(group)
+            if len(group) != 1:
+                msg = f"found {len(group)} contents. Expected 1. ({filename})"
+                raise RuntimeError(msg)
+            contents[filename] = group[0].content
+        # Collect entities
+        groups = it.groupby(_select_entities(cursor), key=lambda x: x.filename)
+        for filename, group in groups:
+            tree = EntityTree(filename, contents[filename])
+            for entity in group:
+                tree._add_entity(entity)
+            trees[filename] = tree
+        return trees
 
-    def _add_entity(self, entity: _EntityDto):
+    def _add_entity(self, entity: EntityDto):
         if entity.parent_id is None and entity.kind != "File":
             raise ValueError(f"Entity (id: {entity.id}) is a root but not a File")
         self._entities[entity.id] = entity
         self._children[entity.parent_id].append(entity.id)
+
+    def __getitem__(self, id: str) -> EntityDto:
+        return self._entities[id]
 
     def is_leaf(self, id: str) -> bool:
         "Returns true if this entity has no children"
@@ -370,6 +404,36 @@ class EntityTree:
             for id in siblings:
                 rows.append(self.to_entity_row(db_path, id))
         return pd.DataFrame.from_records(rows)  # type: ignore
+
+
+class EntityGraph:
+    def __init__(self):
+        self._incoming: defaultdict[str, set[str]] = defaultdict(set)
+        self._outgoing: defaultdict[str, set[str]] = defaultdict(set)
+
+    @staticmethod
+    def load_from_db(cursor: Cursor) -> "EntityGraph":
+        graph = EntityGraph()
+        for dep in _select_deps(cursor):
+            graph.add_dep(dep.src, dep.tgt)
+        return graph
+
+    def add_dep(self, src: str, tgt: str):
+        self._incoming[tgt].add(src)
+        self._outgoing[src].add(tgt)
+
+    def only_incoming(self, id: str, ids: set[str]) -> set[str]:
+        return self._incoming[id] & ids
+
+    def only_outgoing(self, id: str, ids: set[str]) -> set[str]:
+        return self._outgoing[id] & ids
+
+    def subgraph(self, ids: set[str]) -> "EntityGraph":
+        graph = EntityGraph()
+        for src in ids:
+            for tgt in self._outgoing[src] & ids:
+                graph.add_dep(src, tgt)
+        return graph
 
 
 def open_db(db_path: str | PathLike[str]) -> Connection:
@@ -440,25 +504,18 @@ def extract_entities_df(df: pd.DataFrame, *, pbar: bool = False) -> pd.DataFrame
     bar = tqdm(total=len(df), disable=not pbar)
     for db_path in db_paths:
         conn = open_db(db_path)
+        try:
+            trees = EntityTree.load_from_db(conn.cursor())
+        except RuntimeError as e:
+            logger.warn(f"Skipping {db_path} because of error: {e}")
+            continue
         group_df = df[df["db_path"] == db_path]
         filenames: list[str] = sorted(set((group_df["filename"])))  # type: ignore
         for filename in filenames:
             bar.update()
-            try:
-                tree = EntityTree.load_from_db(conn.cursor(), filename)
-                dfs.append(tree.to_entities_df(db_path))
-            except RuntimeError as e:
-                logger.warn(f"Skipping file in {db_path} because of error: {e}")
-                continue
+            tree = trees[filename]
+            dfs.append(tree.to_entities_df(db_path))
     return pd.concat(dfs, ignore_index=True)  # type: ignore
-
-
-def list_files(cursor: Cursor) -> list[str]:
-    return [d.filename for d in _select_files(cursor)]
-
-
-def list_valid_files(cursor: Cursor) -> list[str]:
-    return [f for f in list_files(cursor) if is_filename_valid(f)]
 
 
 def split_lines(

@@ -3,7 +3,7 @@ from io import IOBase, TextIOBase
 
 import click
 import pandas as pd
-from entitybert import selection, training
+from entitybert import cohesion, selection, training
 
 logger = logging.getLogger(__name__)
 
@@ -117,8 +117,19 @@ def train(config_file: str) -> None:
     training.train(training_args)
 
 
+@click.command()
+@click.option("--model", type=click.Path(exists=True))
+@click.argument("INPUT", type=click.File("r"))
+@click.argument("OUTPUT", type=click.File("x"))
+def report_cohesion(model: str, input: TextIOBase, output: TextIOBase):
+    db_paths = [line.rstrip() for line in input.readlines()]
+    df = cohesion.calc_all_cohesion_df(db_paths, model, pbar=True)
+    df.to_csv(output, index=False)  # type: ignore
+
+
 cli.add_command(split)
 cli.add_command(extract_files)
 cli.add_command(filter_files)
 cli.add_command(extract_entities)
 cli.add_command(train)
+cli.add_command(report_cohesion)
