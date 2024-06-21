@@ -1,14 +1,20 @@
+import itertools as it
 import logging
+from collections import Counter, defaultdict
+from dataclasses import dataclass
 from functools import cache
 from typing import Any
 
+import numpy as np
 import pandas as pd
+import scipy as sp
 import torch
 from entitybert import selection
 from entitybert.selection import (
     EntityDto,
     EntityGraph,
     EntityTree,
+    FileGraph,
     is_filename_valid,
 )
 from sentence_transformers import SentenceTransformer, losses
@@ -110,46 +116,37 @@ class MethodCouplingGraph:
         return (0.5 * (n * (n - 1))) - e
 
 
-def flatten_upper(mat) -> Tensor:
-    values = []
-    for i in range(len(mat)):
-        for j in range(i + 1, len(mat)):
-            values.append(mat[i][j])
-    return torch.Tensor(values).to(mat.device)
+@dataclass
+class ModelBasedCohesion:
+    avg_dist_to_center: float
+    max_dist_to_center: float
+    total_variance: float
+    spectral_norm: float
 
 
-def to_neighbors(mat):
-    arr = []
-    for i, row in enumerate(mat):
-        arr.append(torch.cat([row[0:i], row[i + 1 :]]).unsqueeze(0))
-    return torch.cat(arr)
-
-
-def append_model_cohesion(
-    row: dict[str, Any], model: SentenceTransformer, texts: list[str]
-):
+def calc_model_based_cohesion(
+    model: SentenceTransformer, texts: list[str]
+) -> ModelBasedCohesion:
     embeddings = model.encode(texts, convert_to_tensor=True, show_progress_bar=False)
-    mean = torch.mean(embeddings, dim=0).unsqueeze(0) # type: ignore
-    dists = _eucledian_dist(torch.vstack((embeddings, mean))) # type: ignore
-    pairwise_dists = dists[0:-1, 0:-1]
-    flat_pairwise_dists = flatten_upper(pairwise_dists)
+    center = torch.mean(embeddings, dim=0).unsqueeze(0)  # type: ignore
+    dists = _eucledian_dist(torch.vstack((embeddings, center)))  # type: ignore
     dists_to_mean = dists[-1][0:-1]
-    neighbors = to_neighbors(pairwise_dists)
-    near_neighbors, _ = torch.min(neighbors, dim=1)
-    far_neighbors, _ = torch.max(neighbors, dim=1)
-    row["AvgPD"] = flat_pairwise_dists.mean().cpu().item()
-    row["MaxPD"] = flat_pairwise_dists.max().cpu().item()
-    row["AvgDM"] = dists_to_mean.mean().cpu().item()
-    row["MaxDM"] = dists_to_mean.max().cpu().item()
-    row["AvgNN"] = near_neighbors.mean().cpu().item()
-    row["MaxNN"] = near_neighbors.max().cpu().item()
-    row["AvgFN"] = far_neighbors.mean().cpu().item()
-    row["MaxFN"] = far_neighbors.max().cpu().item()
+    avg_dist_to_center = dists_to_mean.mean().cpu().item()
+    max_dist_to_center = dists_to_mean.max().cpu().item()
+    cov = np.cov(embeddings.cpu().numpy().T)  # type: ignore
+    total_variance = np.trace(cov)
+    spectral_norm = sp.linalg.eigh(
+        cov, eigvals_only=True, subset_by_index=[len(cov) - 1, len(cov) - 1]
+    ).item()
+    return ModelBasedCohesion(
+        avg_dist_to_center, max_dist_to_center, total_variance, spectral_norm
+    )
 
 
-def calc_cohesion_df(db_path: str, model: SentenceTransformer) -> pd.DataFrame | None:
+def calc_measure_df(db_path: str, model: SentenceTransformer) -> pd.DataFrame | None:
     try:
         conn = selection.open_db(db_path)
+        file_graph = FileGraph.load_from_db(conn.cursor())
         trees = EntityTree.load_from_db(conn.cursor())
         graph = EntityGraph.load_from_db(conn.cursor())
     except Exception:
@@ -158,34 +155,76 @@ def calc_cohesion_df(db_path: str, model: SentenceTransformer) -> pd.DataFrame |
     for filename, tree in tqdm(trees.items()):
         if not is_filename_valid(filename):
             continue
-        for i, siblings in enumerate(tree.nontrivial_leaf_siblings()):
-            if len(siblings) == 1:
-                print("????????")
-            entities = [tree[id] for id in siblings]
-            parent_id = entities[0].parent_id
-            if parent_id is None or not is_class(tree[parent_id]):
-                continue
-            texts = [tree.entity_text(id) for id in siblings]
-            parent = tree[parent_id]
-            subgraph = graph.subgraph(set(siblings))
-            mag = MethodAttributeGraph(entities, subgraph)
-            mcg = MethodCouplingGraph(mag)
-            row: dict[str, Any] = dict()
-            row["DB"] = db_path
-            row["Filename"] = filename
-            row["Group"] = f"Group {i + 1}"
-            row["Name"] = parent.name
-            row["Kind"] = parent.kind
-            row["LOC"] = parent.end_row - parent.start_row
-            row["Entities"] = len(entities)
-            row["Attributes"] = len(mag.attributes())
-            row["Methods"] = len(mag.methods())
-            row["LCOM1"] = mcg.lcom1()
-            row["LCOM2"] = mag.lcom2()
-            row["LCOM3"] = mag.lcom3()
-            append_model_cohesion(row, model, texts)
-            rows.append(row)
+        groups = tree.nontrivial_leaf_siblings()
+        if len(groups) != 1:
+            continue
+        siblings = groups[0]
+        entities = [tree[id] for id in siblings]
+        parent_id = entities[0].parent_id
+        if parent_id is None or not is_class(tree[parent_id]):
+            continue
+        parent = tree[parent_id]
+        texts = [tree.entity_text(id) for id in siblings]
+        row: dict[str, Any] = dict()
+        row["DB"] = db_path
+        row["Filename"] = filename
+        row["Name"] = parent.name
+        row["Kind"] = parent.kind
+        row["[E] LOC"] = tree.loc()
+        row["[E] Entities"] = len(entities)
+
+        # LCOM1, LCOM2, LCOM3
+        subgraph = graph.subgraph(set(siblings))
+        mag = MethodAttributeGraph(entities, subgraph)
+        mcg = MethodCouplingGraph(mag)
+        row["[E] Fields"] = len(mag.attributes())
+        row["[E] Methods"] = len(mag.methods())
+        row["[C] LCOM1"] = mcg.lcom1()
+        row["[C] LCOM2"] = mag.lcom2()
+        row["[C] LCOM3"] = mag.lcom3()
+
+        # Model-based Semantic Cohesion
+        msc = calc_model_based_cohesion(model, texts)
+        row["[C] MSC1"] = msc.avg_dist_to_center
+        row["[C] MSC2"] = msc.max_dist_to_center
+        row["[C] MSC3"] = msc.total_variance
+        row["[C] MSC4"] = msc.spectral_norm
+
+        # History scores
+        cochanges = file_graph.cochange_counts(filename)
+        nontrivial_cochanges = file_graph.nontrivial_cochange_counts(filename)
+        n_changes = len(file_graph.commits_of(filename))
+        row["[H] Changes"] = n_changes
+        row["[H] Cochanges"] = cochanges.total()
+        row["[H] Cochanges (>1)"] = nontrivial_cochanges.total()
+        row["[H] Unique Cochanges"] = len(cochanges)
+        row["[H] Unique Cochanges (>1)"] = len(nontrivial_cochanges)
+        row["[H] Cochange Rate"] = row["[H] Cochanges"] / n_changes
+        row["[H] Cochange (>1) Rate"] = row["[H] Cochanges (>1)"] / n_changes
+        row["[H] Unique Cochange Rate"] = row["[H] Unique Cochanges"] / n_changes
+        row["[H] Unique Cochange (>1) Rate"] = row["[H] Unique Cochanges (>1)"] / n_changes
+
+        rows.append(row)
     return pd.DataFrame.from_records(rows)  # type: ignore
+
+
+def get_numeric_cols(df: pd.DataFrame) -> list[str]:
+    return [c for c, d in zip(df.columns, df.dtypes) if np.issubdtype(d, np.number)]
+
+
+def calc_db_level_coefs(df: pd.DataFrame) -> pd.DataFrame:
+    rows: list[dict[str, Any]] = []
+    for db, group_df in df.groupby("DB"):
+        for a, b in it.combinations(get_numeric_cols(df), r=2):
+            x, y = list(group_df[a]), list(group_df[b])
+            tau = sp.stats.kendalltau(x, y, variant="c").statistic
+            row1 = {"DB": db, "A": a, "B": b}
+            row1["Tau"] = tau
+            row2 = row1.copy()
+            row2["A"], row2["B"] = b, a
+            rows.extend([row1, row2])
+    res_df = pd.DataFrame.from_records(rows)
+    return res_df.sort_values(["DB", "A", "B"])
 
 
 def calc_all_cohesion_df(
@@ -195,7 +234,7 @@ def calc_all_cohesion_df(
     skipped_paths: list[str] = []
     model = SentenceTransformer(model_path)
     for db_path in tqdm(db_paths, disable=not pbar):
-        cohesion_df = calc_cohesion_df(db_path, model)
+        cohesion_df = calc_measure_df(db_path, model)
         if cohesion_df is not None:
             dfs.append(cohesion_df)
         else:

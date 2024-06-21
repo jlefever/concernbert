@@ -3,9 +3,10 @@ import logging
 import math
 import random
 import sqlite3
-from collections import defaultdict
+from collections import Counter, defaultdict
 from collections.abc import Iterable
 from dataclasses import dataclass
+from functools import cache
 from os import PathLike
 from sqlite3 import Connection, Cursor
 from typing import Any
@@ -161,14 +162,6 @@ def _select_entities(cursor: Cursor) -> Iterable[EntityDto]:
     yield from (EntityDto(**r) for r in cursor.fetchall())
 
 
-_SELECT_CONTENTS = """
-    SELECT E.name AS filename, C.content
-    FROM entities E
-    JOIN contents C ON C.content_id = E.content_id
-    WHERE E.kind = 'File'
-    ORDER BY E.name
-"""
-
 _SELECT_DEPS = """
     SELECT DISTINCT
         HEX(D.src) AS src,
@@ -188,6 +181,15 @@ class _DepDto:
 def _select_deps(cursor: Cursor) -> Iterable[_DepDto]:
     cursor.execute(_SELECT_DEPS)
     yield from (_DepDto(**r) for r in cursor.fetchall())
+
+
+_SELECT_CONTENTS = """
+    SELECT E.name AS filename, C.content
+    FROM entities E
+    JOIN contents C ON C.content_id = E.content_id
+    WHERE E.kind = 'File'
+    ORDER BY E.name
+"""
 
 
 @dataclass
@@ -237,16 +239,17 @@ def is_filename_valid(filename: str) -> bool:
     return not any(s in _INVALID_SEGMENTS for s in segments)
 
 
-class _FileGraph:
+class FileGraph:
     def __init__(self):
         self._files: dict[str, _FileDto] = dict()
         self._incoming: defaultdict[str, set[str]] = defaultdict(set)
         self._outgoing: defaultdict[str, set[str]] = defaultdict(set)
-        self._commits: defaultdict[str, set[str]] = defaultdict(set)
+        self._file_to_commits: defaultdict[str, set[str]] = defaultdict(set)
+        self._commit_to_files: defaultdict[str, set[str]] = defaultdict(set)
 
     @staticmethod
-    def load_from_db(cursor: Cursor) -> "_FileGraph":
-        graph = _FileGraph()
+    def load_from_db(cursor: Cursor) -> "FileGraph":
+        graph = FileGraph()
         for file in _select_files(cursor):
             graph.add_file(file)
         for dep in _select_file_deps(cursor):
@@ -263,13 +266,17 @@ class _FileGraph:
         self._outgoing[src].add(tgt)
 
     def add_change(self, file: str, commit: str):
-        self._commits[file].add(commit)
+        self._file_to_commits[file].add(commit)
+        self._commit_to_files[commit].add(file)
 
     def files(self) -> list[str]:
         return list(self._files)
 
+    def files_of(self, commit: str) -> set[str]:
+        return self._commit_to_files[commit]
+
     def commits_of(self, file: str) -> set[str]:
-        return self._commits[file]
+        return self._file_to_commits[file]
 
     def in_deps_of(self, file: str) -> set[str]:
         return self._incoming[file]
@@ -279,6 +286,18 @@ class _FileGraph:
 
     def non_deps_of(self, file: str) -> set[str]:
         return self._files.keys() - self.in_deps_of(file) - self.out_deps_of(file)
+
+    @cache
+    def cochange_counts(self, file: str) -> Counter[str]:
+        counter = Counter()
+        for commit in self.commits_of(file):
+            counter.update(self.files_of(commit))
+        del counter[file]
+        return counter
+    
+    @cache
+    def nontrivial_cochange_counts(self, file: str) -> Counter[str]:
+        return Counter({k: c - 1 for k, c in self.cochange_counts(file).items() if c > 1})
 
     def cochange(self, file_a: str, file_b: str) -> int:
         return len(self.commits_of(file_a).intersection(self.commits_of(file_b)))
@@ -357,6 +376,9 @@ class EntityTree:
 
     def __getitem__(self, id: str) -> EntityDto:
         return self._entities[id]
+
+    def loc(self) -> int:
+        return self._content.count(0x0A) + 1
 
     def is_leaf(self, id: str) -> bool:
         "Returns true if this entity has no children"
@@ -451,7 +473,7 @@ def open_db(db_path: str | PathLike[str]) -> Connection:
 def load_files_df(db_path: str) -> pd.DataFrame | None:
     conn = None
     try:
-        graph = _FileGraph.load_from_db(open_db(db_path).cursor())
+        graph = FileGraph.load_from_db(open_db(db_path).cursor())
         return graph.to_files_df(db_path)
     except sqlite3.OperationalError:
         return None

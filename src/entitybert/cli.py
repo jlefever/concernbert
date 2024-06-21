@@ -120,11 +120,14 @@ def train(config_file: str) -> None:
 @click.command()
 @click.option("--model", type=click.Path(exists=True))
 @click.argument("INPUT", type=click.File("r"))
-@click.argument("OUTPUT", type=click.File("x"))
-def report_cohesion(model: str, input: TextIOBase, output: TextIOBase):
+@click.argument("OUTPUT", type=click.Path(exists=False))
+def report_cohesion(model: str, input: TextIOBase, output: str):
     db_paths = [line.rstrip() for line in input.readlines()]
-    df = cohesion.calc_all_cohesion_df(db_paths, model, pbar=True)
-    df.to_csv(output, index=False)  # type: ignore
+    cohesion_df = cohesion.calc_all_cohesion_df(db_paths, model, pbar=True)
+    db_level_coef_df = cohesion.calc_db_level_coefs(cohesion_df)
+    with pd.ExcelWriter(output) as writer:
+        cohesion_df.to_excel(writer, sheet_name="Scores", index=False)
+        db_level_coef_df.to_excel(writer, sheet_name="Correlation", index=False)
 
 
 cli.add_command(split)

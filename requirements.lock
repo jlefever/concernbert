@@ -17,6 +17,8 @@ charset-normalizer==3.3.2
     # via requests
 click==8.1.7
     # via entitybert
+et-xmlfile==1.1.0
+    # via openpyxl
 filelock==3.14.0
     # via huggingface-hub
     # via torch
@@ -45,17 +47,25 @@ numpy==1.26.4
     # via accelerate
     # via entitybert
     # via pandas
+    # via patsy
     # via pyarrow
     # via scikit-learn
     # via scipy
     # via sentence-transformers
+    # via statsmodels
     # via transformers
+openpyxl==3.1.4
+    # via entitybert
 packaging==24.0
     # via accelerate
     # via huggingface-hub
+    # via statsmodels
     # via transformers
 pandas==2.2.2
     # via entitybert
+    # via statsmodels
+patsy==0.5.6
+    # via statsmodels
 pillow==10.3.0
     # via sentence-transformers
 psutil==5.9.8
@@ -83,10 +93,14 @@ scikit-learn==1.5.0
 scipy==1.13.1
     # via scikit-learn
     # via sentence-transformers
+    # via statsmodels
 sentence-transformers==2.7.0
     # via entitybert
 six==1.16.0
+    # via patsy
     # via python-dateutil
+statsmodels==0.14.2
+    # via entitybert
 sympy==1.12.1
     # via torch
 threadpoolctl==3.5.0
