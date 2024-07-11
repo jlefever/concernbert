@@ -394,6 +394,9 @@ class EntityTree:
     def nontrivial_leaf_siblings(self) -> list[list[str]]:
         return [s for s in self.leaf_siblings() if len(s) > 1]
 
+    def text(self) -> str:
+        return self._content.decode()
+
     def entity_text(self, id: str) -> str:
         return self._entities[id].text(self._content)
 
@@ -449,6 +452,13 @@ class EntityGraph:
 
     def only_outgoing(self, id: str, ids: set[str]) -> set[str]:
         return self._outgoing[id] & ids
+
+    def to_pairs(self) -> set[tuple[str, str]]:
+        pairs: set[tuple[str, str]] = set()
+        for source, targets in self._outgoing.items():
+            for target in targets:
+                pairs.add((source, target))
+        return pairs
 
     def subgraph(self, ids: set[str]) -> "EntityGraph":
         graph = EntityGraph()
@@ -538,6 +548,30 @@ def extract_entities_df(df: pd.DataFrame, *, pbar: bool = False) -> pd.DataFrame
             tree = trees[filename]
             dfs.append(tree.to_entities_df(db_path))
     return pd.concat(dfs, ignore_index=True)  # type: ignore
+
+
+def calc_simple_valid_classes_df(db_path: str) -> pd.DataFrame:
+    conn = open_db(db_path)
+    trees = EntityTree.load_from_db(conn.cursor())
+    rows: list[dict[str, Any]] = []
+    for filename, tree in trees.items():
+        if not is_filename_valid(filename):
+            continue
+        groups = tree.nontrivial_leaf_siblings()
+        if len(groups) != 1:
+            continue
+        siblings = groups[0]
+        entities = [tree[id] for id in siblings]
+        parent_id = entities[0].parent_id
+        if parent_id is None or tree[parent_id].kind != "Class":
+            continue
+        row: dict[str, Any] = dict()
+        row["filename"] = filename
+        row["loc"] = tree.loc()
+        row["entities"] = len(entities)
+        row["content"] = tree.text()
+        rows.append(row)
+    return pd.DataFrame.from_records(rows, index="filename").sort_values("filename")
 
 
 def split_lines(

@@ -114,32 +114,85 @@ class MethodCouplingGraph:
         n = self.n_nodes()
         e = self.n_edges()
         return (0.5 * (n * (n - 1))) - e
+    
+    def lcom1_sims(self, sims: dict[tuple[str, str], float]) -> float:
+        total = 0
+        methods = list(self._mag.methods())
+        for i in range(len(methods)):
+            i_id = methods[i].id
+            i_attributes = self._mag.attributes_for(i_id)
+            i_attributes = set(a.id for a in i_attributes)
+            for j in range(i + 1, len(methods)):
+                j_id = methods[j].id
+                j_attributes = self._mag.attributes_for(j_id)
+                j_attributes = set(a.id for a in j_attributes)
+                if len(i_attributes & j_attributes) == 0:
+                    total += sims[(i_id, j_id)]
+        return total
+
+
+def calc_adjacency_matrix(entity_ids, edges):
+    n = len(entity_ids)
+    node_index = {node: i for i, node in enumerate(entity_ids)}
+    adj_matrix = np.zeros((n, n))
+    for edge in edges:
+        i, j = node_index[edge[0]], node_index[edge[1]]
+        adj_matrix[i, j] = 1
+        adj_matrix[j, i] = 1
+    return adj_matrix
+
+
+def calc_commute_time_kernel(entity_ids, edges):
+    adj_matrix = calc_adjacency_matrix(entity_ids, edges)
+    degree_matrix = np.diag(adj_matrix.sum(axis=1))
+    laplacian_matrix = degree_matrix - adj_matrix
+    laplacian_pseudo_inverse = np.linalg.pinv(laplacian_matrix)
+    return laplacian_pseudo_inverse
+
+
+def calc_embeddings(model: SentenceTransformer, texts: list[str]) -> Tensor:
+    return model.encode(texts, convert_to_tensor=True, show_progress_bar=False)  # type: ignore
 
 
 @dataclass
 class ModelBasedCohesion:
     avg_dist_to_center: float
     max_dist_to_center: float
-    total_variance: float
-    spectral_norm: float
+    sum_dist_to_center: float
+    avg_dist_to_center_s: float
+    max_dist_to_center_s: float
+    sum_dist_to_center_s: float
 
 
-def calc_model_based_cohesion(
-    model: SentenceTransformer, texts: list[str]
-) -> ModelBasedCohesion:
-    embeddings = model.encode(texts, convert_to_tensor=True, show_progress_bar=False)
+def calc_dists_to_center(embeddings: Tensor) -> Tensor:
     center = torch.mean(embeddings, dim=0).unsqueeze(0)  # type: ignore
     dists = _eucledian_dist(torch.vstack((embeddings, center)))  # type: ignore
-    dists_to_mean = dists[-1][0:-1]
-    avg_dist_to_center = dists_to_mean.mean().cpu().item()
-    max_dist_to_center = dists_to_mean.max().cpu().item()
-    cov = np.cov(embeddings.cpu().numpy().T)  # type: ignore
-    total_variance = np.trace(cov)
-    spectral_norm = sp.linalg.eigh(
-        cov, eigvals_only=True, subset_by_index=[len(cov) - 1, len(cov) - 1]
-    ).item()
+    return dists[-1][:-1]
+
+
+def calc_model_based_cohesion(embeddings: Tensor, kernel: np.ndarray) -> ModelBasedCohesion:
+    # Without structure
+    dists = calc_dists_to_center(embeddings)
+    avg_dist_to_center = dists.mean().cpu().item()
+    max_dist_to_center = dists.max().cpu().item()
+    sum_dist_to_center = dists.sum().cpu().item()
+
+    # With structure
+    kernel = kernel.astype(np.float32) # mps issue
+    kernel_torch = torch.from_numpy(kernel).to(embeddings.device)
+    enhanced_embeddings = torch.matmul(kernel_torch, embeddings)
+    dists = calc_dists_to_center(enhanced_embeddings)
+    avg_dist_to_center_s = dists.mean().cpu().item()
+    max_dist_to_center_s = dists.max().cpu().item()
+    sum_dist_to_center_s = dists.sum().cpu().item()
+
     return ModelBasedCohesion(
-        avg_dist_to_center, max_dist_to_center, total_variance, spectral_norm
+        avg_dist_to_center,
+        max_dist_to_center,
+        sum_dist_to_center,
+        avg_dist_to_center_s,
+        max_dist_to_center_s,
+        sum_dist_to_center_s,
     )
 
 
@@ -170,39 +223,44 @@ def calc_measure_df(db_path: str, model: SentenceTransformer) -> pd.DataFrame | 
         row["Filename"] = filename
         row["Name"] = parent.name
         row["Kind"] = parent.kind
-        row["[E] LOC"] = tree.loc()
-        row["[E] Entities"] = len(entities)
+        row["LOC"] = tree.loc()
+        row["Entities"] = len(entities)
 
         # LCOM1, LCOM2, LCOM3
         subgraph = graph.subgraph(set(siblings))
         mag = MethodAttributeGraph(entities, subgraph)
         mcg = MethodCouplingGraph(mag)
-        row["[E] Fields"] = len(mag.attributes())
-        row["[E] Methods"] = len(mag.methods())
-        row["[C] LCOM1"] = mcg.lcom1()
-        row["[C] LCOM2"] = mag.lcom2()
-        row["[C] LCOM3"] = mag.lcom3()
+        row["Fields"] = len(mag.attributes())
+        row["Methods"] = len(mag.methods())
+        row["LCOM1"] = mcg.lcom1()
+        row["LCOM2"] = mag.lcom2()
+        row["LCOM3"] = mag.lcom3()
 
         # Model-based Semantic Cohesion
-        msc = calc_model_based_cohesion(model, texts)
-        row["[C] MSC1"] = msc.avg_dist_to_center
-        row["[C] MSC2"] = msc.max_dist_to_center
-        row["[C] MSC3"] = msc.total_variance
-        row["[C] MSC4"] = msc.spectral_norm
+        embeddings = calc_embeddings(model, texts)
+        kernel = calc_commute_time_kernel(siblings, subgraph.to_pairs())
+        msc = calc_model_based_cohesion(embeddings, kernel)
+        row["MSC_avg"] = msc.avg_dist_to_center
+        row["MSC_max"] = msc.max_dist_to_center
+        row["MSC_sum"] = msc.sum_dist_to_center
+        row["MSC_sumsq"] = msc.sum_dist_to_center ** 2
+        row["MSC_avg_s"] = msc.avg_dist_to_center_s
+        row["MSC_max_s"] = msc.max_dist_to_center_s
+        row["MSC_sum_s"] = msc.sum_dist_to_center_s
+        row["MSC_sumsq_s"] = msc.sum_dist_to_center ** 2
 
-        # History scores
-        cochanges = file_graph.cochange_counts(filename)
-        nontrivial_cochanges = file_graph.nontrivial_cochange_counts(filename)
-        n_changes = len(file_graph.commits_of(filename))
-        row["[H] Changes"] = n_changes
-        row["[H] Cochanges"] = cochanges.total()
-        row["[H] Cochanges (>1)"] = nontrivial_cochanges.total()
-        row["[H] Unique Cochanges"] = len(cochanges)
-        row["[H] Unique Cochanges (>1)"] = len(nontrivial_cochanges)
-        row["[H] Cochange Rate"] = row["[H] Cochanges"] / n_changes
-        row["[H] Cochange (>1) Rate"] = row["[H] Cochanges (>1)"] / n_changes
-        row["[H] Unique Cochange Rate"] = row["[H] Unique Cochanges"] / n_changes
-        row["[H] Unique Cochange (>1) Rate"] = row["[H] Unique Cochanges (>1)"] / n_changes
+        # Weird LCOM1 hybrid
+        sims = dict()
+        dists = _eucledian_dist(embeddings).cpu().numpy()
+        for i, i_id in enumerate(siblings):
+            for j, j_id in enumerate(siblings):
+                sims[(i_id, j_id)] = 1 / (1 + dists[i][j])
+        row["MSC_LCOM1"] = mcg.lcom1_sims(sims)
+        pairwise_sum = 0
+        for i in range(len(siblings)):
+            for j in range(i + 1, len(siblings)):
+                pairwise_sum += dists[i][j]
+        row["MSC_sum_pairwise"] = pairwise_sum
 
         rows.append(row)
     return pd.DataFrame.from_records(rows)  # type: ignore
