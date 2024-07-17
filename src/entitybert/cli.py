@@ -133,15 +133,20 @@ def report_cohesion(model: str, input: TextIOBase, output: str):
 @click.command()
 @click.argument("INPUT", type=click.Path(exists=True))
 @click.argument("OUTPUT", type=click.Path(exists=False))
-def export_simple_valid_classes(input: str, output: str) -> None:
-    """Exports a CSV of simple valid classes.
+def export_file_ranker(input: str, output: str) -> None:
+    """Exports a CSV of classes that can be used in the fileranker web
+    application.
 
-    Given an INPUT database file, write a CSV to OUTPUT with two columns:
-    filename and content. Only includes files that are simple classes (classes
-    that do not contain nested types) and have a valid name (does not appear to
-    be a test.) Additionally, all classes contain at least two entities.
+    Given an INPUT database file, write a CSV to OUTPUT with four columns:
+    'Filename', 'Lines', 'Code', and 'Content'. Only includes files that are
+    simple classes (classes that do not contain nested types) and have a valid
+    name (does not appear to be a test.) Additionally, all classes contain at
+    least two entities.
     """
-    selection.calc_simple_valid_classes_df(input).to_csv(output)
+    df = selection.prepare_file_ranker_df(input)
+    if df is None:
+        raise RuntimeError()
+    df.to_csv(output)
 
 
 cli.add_command(split)
@@ -150,4 +155,4 @@ cli.add_command(filter_files)
 cli.add_command(extract_entities)
 cli.add_command(train)
 cli.add_command(report_cohesion)
-cli.add_command(export_simple_valid_classes)
+cli.add_command(export_file_ranker)

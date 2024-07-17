@@ -3,11 +3,15 @@ import logging
 import math
 import random
 import sqlite3
+import subprocess as sp
+import tempfile
 from collections import Counter, defaultdict
 from collections.abc import Iterable
 from dataclasses import dataclass
 from functools import cache
+from io import StringIO
 from os import PathLike
+from pathlib import Path
 from sqlite3 import Connection, Cursor
 from typing import Any
 
@@ -294,10 +298,12 @@ class FileGraph:
             counter.update(self.files_of(commit))
         del counter[file]
         return counter
-    
+
     @cache
     def nontrivial_cochange_counts(self, file: str) -> Counter[str]:
-        return Counter({k: c - 1 for k, c in self.cochange_counts(file).items() if c > 1})
+        return Counter(
+            {k: c - 1 for k, c in self.cochange_counts(file).items() if c > 1}
+        )
 
     def cochange(self, file_a: str, file_b: str) -> int:
         return len(self.commits_of(file_a).intersection(self.commits_of(file_b)))
@@ -376,6 +382,9 @@ class EntityTree:
 
     def __getitem__(self, id: str) -> EntityDto:
         return self._entities[id]
+
+    def filename(self) -> str:
+        return self._filename
 
     def loc(self) -> int:
         return self._content.count(0x0A) + 1
@@ -550,9 +559,29 @@ def extract_entities_df(df: pd.DataFrame, *, pbar: bool = False) -> pd.DataFrame
     return pd.concat(dfs, ignore_index=True)  # type: ignore
 
 
-def calc_simple_valid_classes_df(db_path: str) -> pd.DataFrame:
-    conn = open_db(db_path)
-    trees = EntityTree.load_from_db(conn.cursor())
+def run_scc(trees: Iterable[EntityTree]) -> pd.DataFrame:
+    with tempfile.TemporaryDirectory() as temp_dir:
+        for tree in trees:
+            path = Path(temp_dir, tree.filename())
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_text(tree.text())
+        args = ["scc", "--by-file", "--format=csv"]
+        csv = sp.run(args, capture_output=True, cwd=temp_dir).stdout.decode()
+        df = pd.read_csv(StringIO(csv))
+        df = df.drop(columns=["Filename"]).rename(columns={"Provider": "Filename"})
+        return df.set_index("Filename")
+
+
+def prepare_file_ranker_df(db_path: str) -> pd.DataFrame | None:
+    try:
+        conn = open_db(db_path)
+    except sqlite3.OperationalError:
+        return None
+    try:
+        trees = EntityTree.load_from_db(conn.cursor())
+    except KeyError:
+        return None
+    scc_df = run_scc(trees.values())
     rows: list[dict[str, Any]] = []
     for filename, tree in trees.items():
         if not is_filename_valid(filename):
@@ -567,11 +596,14 @@ def calc_simple_valid_classes_df(db_path: str) -> pd.DataFrame:
             continue
         row: dict[str, Any] = dict()
         row["filename"] = filename
-        row["loc"] = tree.loc()
+        row["loc"] = scc_df.loc[filename]["Lines"]
+        row["lloc"] = scc_df.loc[filename]["Code"]
         row["entities"] = len(entities)
         row["content"] = tree.text()
         rows.append(row)
-    return pd.DataFrame.from_records(rows, index="filename").sort_values("filename")
+    if len(rows) == 0:
+        return None
+    return pd.DataFrame.from_records(rows)
 
 
 def split_lines(

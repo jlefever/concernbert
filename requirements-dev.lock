@@ -45,6 +45,7 @@ charset-normalizer==3.3.2
     # via requests
 click==8.1.7
     # via entitybert
+    # via nltk
 comm==0.2.2
     # via ipykernel
     # via ipywidgets
@@ -77,6 +78,8 @@ fqdn==1.5.1
 fsspec==2024.6.0
     # via huggingface-hub
     # via torch
+gensim==4.3.2
+    # via entitybert
 h11==0.14.0
     # via httpcore
 hdbscan==0.8.36
@@ -117,6 +120,7 @@ jinja2==3.1.4
     # via torch
 joblib==1.4.2
     # via hdbscan
+    # via nltk
     # via pynndescent
     # via scikit-learn
 json5==0.9.25
@@ -198,7 +202,10 @@ nbformat==5.10.4
 nest-asyncio==1.6.0
     # via ipykernel
 networkx==3.3
+    # via entitybert
     # via torch
+nltk==3.8.1
+    # via entitybert
 notebook==7.2.0
     # via jupyter
 notebook-shim==0.2.4
@@ -211,6 +218,7 @@ numpy==1.26.4
     # via accelerate
     # via contourpy
     # via entitybert
+    # via gensim
     # via hdbscan
     # via matplotlib
     # via numba
@@ -313,6 +321,7 @@ referencing==0.35.1
     # via jsonschema-specifications
     # via jupyter-events
 regex==2024.5.15
+    # via nltk
     # via transformers
 requests==2.32.3
     # via huggingface-hub
@@ -335,7 +344,9 @@ scikit-learn==1.5.0
     # via pynndescent
     # via sentence-transformers
     # via umap-learn
-scipy==1.13.1
+scipy==1.12.0
+    # via entitybert
+    # via gensim
     # via hdbscan
     # via pynndescent
     # via scikit-learn
@@ -347,12 +358,16 @@ send2trash==1.8.3
     # via jupyter-server
 sentence-transformers==2.7.0
     # via entitybert
+setuptools==70.3.0
+    # via tree-sitter
 six==1.16.0
     # via asttokens
     # via bleach
     # via patsy
     # via python-dateutil
     # via rfc3339-validator
+smart-open==7.0.4
+    # via gensim
 sniffio==1.3.1
     # via anyio
     # via httpx
@@ -387,6 +402,7 @@ tornado==6.4.1
     # via terminado
 tqdm==4.66.4
     # via huggingface-hub
+    # via nltk
     # via sentence-transformers
     # via transformers
     # via umap-learn
@@ -409,6 +425,11 @@ traitlets==5.14.3
 transformers==4.41.2
     # via entitybert
     # via sentence-transformers
+tree-sitter==0.20.4
+    # via entitybert
+    # via tree-sitter-languages
+tree-sitter-languages==1.10.2
+    # via entitybert
 types-python-dateutil==2.9.0.20240316
     # via arrow
 typing-extensions==4.12.1
@@ -432,3 +453,5 @@ websocket-client==1.8.0
     # via jupyter-server
 widgetsnbextension==4.0.11
     # via ipywidgets
+wrapt==1.16.0
+    # via smart-open
