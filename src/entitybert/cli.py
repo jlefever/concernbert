@@ -20,7 +20,7 @@ def cli():
 @click.argument("VAL", type=click.File("x"))
 @click.option("--test-ratio", default=0.16, help="Fraction of lines that go to test")
 @click.option("--val-ratio", default=0.04, help="Fraction of lines that go to val")
-@click.option("--seed", default=42, help="Random seed used for splitting")
+@click.option("--seed", help="Random seed used for splitting")
 def split(
     input: TextIOBase,
     train: TextIOBase,
@@ -28,7 +28,7 @@ def split(
     val: TextIOBase,
     test_ratio: float,
     val_ratio: float,
-    seed: int,
+    seed: int | None,
 ) -> None:
     """Split the lines of a text file into train, test, and val sets.
 
@@ -56,15 +56,15 @@ def extract_files(input: TextIOBase, output: TextIOBase):
     rows to OUTPUT.
     """
     db_paths = [line.rstrip() for line in input.readlines()]
-    df = selection.load_many_files_df(db_paths, pbar=True)
+    df = selection.load_files_df(db_paths, pbar=True)
     df.to_csv(output, index=False)  # type: ignore
 
 
 @click.command()
 @click.argument("INPUT", type=click.File("r"))
 @click.argument("OUTPUT", type=click.File("x"))
-@click.option("--global-quantile", default=0.80, help="The global quantile")
-@click.option("--local-quantile", default=0.80, help="The local quantile")
+@click.option("--global-quantile", default=0.90, help="The global quantile")
+@click.option("--local-quantile", default=0.90, help="The local quantile")
 @click.option("--keep-invalid-names", is_flag=True)
 def filter_files(
     input: TextIOBase,

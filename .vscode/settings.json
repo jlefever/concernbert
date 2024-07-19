@@ -3,6 +3,7 @@
     "python.analysis.typeCheckingMode": "basic",
     "python.analysis.inlayHints.functionReturnTypes": true,
     "cSpell.words": [
+        "astype",
         "bigcode",
         "cochange",
         "cochanges",
@@ -34,6 +35,7 @@
         "probs",
         "punkt",
         "quantile",
+        "quickstarts",
         "statline",
         "stopwords",
         "testkit",

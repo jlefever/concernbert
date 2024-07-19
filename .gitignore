@@ -12,3 +12,5 @@ wheels/
 .data*
 .models*
 old/
+_data*
+_models*

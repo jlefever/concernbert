@@ -210,28 +210,51 @@ def _select_contents(cursor: Cursor) -> Iterable[_ContentDto]:
 
 
 _INVALID_ENDINGS = [
-    "Test.java",
-    "Tests.java",
-    "Example.java",
-    "Examples.java",
+    "-info.java",
     "Benchmark.java",
     "Benchmarks.java",
-    "-info.java",
+    "Demo.java",
+    "Demos.java",
+    "Example.java",
+    "Examples.java",
+    "Exercise.java",
+    "Exercises.java",
+    "Guide.java",
+    "Guides.java",
+    "Sample.java",
+    "Samples.java",
+    "Test.java",
+    "Tests.java",
+    "Tutorial.java",
+    "Tutorials.java",
 ]
+
 
 _INVALID_SEGMENTS = set(
     [
-        "test",
-        "tests",
-        "integration-test",
-        "integration-tests",
-        "testkit",
-        "gen",
-        "generated",
-        "example",
-        "examples",
         "benchmark",
         "benchmarks",
+        "demo",
+        "demos",
+        "example",
+        "examples",
+        "exercise",
+        "exercises",
+        "gen",
+        "generated",
+        "guide",
+        "guides",
+        "integration-test",
+        "integration-tests",
+        "quickstart",
+        "quickstarts",
+        "sample",
+        "samples",
+        "test",
+        "testkit",
+        "tests",
+        "tutorial",
+        "tutorials",
     ]
 )
 
@@ -334,7 +357,7 @@ class FileGraph:
         row["is_name_valid"] = is_filename_valid(file_dto.filename)
         row["fan_in"] = len(self.in_deps_of(file))
         row["fan_out"] = len(self.out_deps_of(file))
-        row["revisions"] = len(self.commits_of(file))
+        row["commits"] = len(self.commits_of(file))
         row["CC (in)"] = self.cochange_fan_in(file)
         row["CC (out)"] = self.cochange_fan_out(file)
         row["CC (cross)"] = self.cochange_cross(file)
@@ -479,7 +502,7 @@ class EntityGraph:
 
 def open_db(db_path: str | PathLike[str]) -> Connection:
     conn = sqlite3.connect(db_path)
-    conn.executescript(_CREATE_TEMP_TABLES)
+    conn.executescript(_CREATE_TEMP_TABLES)  # type: ignore
 
     def dict_factory(cursor: Cursor, row: Any):
         fields = [column[0] for column in cursor.description]
@@ -489,29 +512,11 @@ def open_db(db_path: str | PathLike[str]) -> Connection:
     return conn
 
 
-def load_files_df(db_path: str) -> pd.DataFrame | None:
-    conn = None
-    try:
-        graph = FileGraph.load_from_db(open_db(db_path).cursor())
-        return graph.to_files_df(db_path)
-    except sqlite3.OperationalError:
-        return None
-    finally:
-        if conn:
-            conn.close()
-
-
-def load_many_files_df(db_paths: list[str], *, pbar: bool = False) -> pd.DataFrame:
+def load_files_df(db_paths: list[str], *, pbar: bool = False) -> pd.DataFrame:
     dfs: list[pd.DataFrame] = []
-    skipped_paths: list[str] = []
     for db_path in tqdm(db_paths, disable=not pbar):
-        files_df = load_files_df(db_path)
-        if files_df is not None:
-            dfs.append(files_df)
-        else:
-            skipped_paths.append(db_path)
-    for path in skipped_paths:
-        logger.warn(f"Could not load file data from {path}")
+        graph = FileGraph.load_from_db(open_db(db_path).cursor())
+        dfs.append(graph.to_files_df(db_path))
     return pd.concat(dfs, ignore_index=True)  # type: ignore
 
 
@@ -545,11 +550,7 @@ def extract_entities_df(df: pd.DataFrame, *, pbar: bool = False) -> pd.DataFrame
     bar = tqdm(total=len(df), disable=not pbar)
     for db_path in db_paths:
         conn = open_db(db_path)
-        try:
-            trees = EntityTree.load_from_db(conn.cursor())
-        except RuntimeError as e:
-            logger.warn(f"Skipping {db_path} because of error: {e}")
-            continue
+        trees = EntityTree.load_from_db(conn.cursor())
         group_df = df[df["db_path"] == db_path]
         filenames: list[str] = sorted(set((group_df["filename"])))  # type: ignore
         for filename in filenames:
@@ -572,15 +573,10 @@ def run_scc(trees: Iterable[EntityTree]) -> pd.DataFrame:
         return df.set_index("Filename")
 
 
-def prepare_file_ranker_df(db_path: str) -> pd.DataFrame | None:
-    try:
-        conn = open_db(db_path)
-    except sqlite3.OperationalError:
-        return None
-    try:
-        trees = EntityTree.load_from_db(conn.cursor())
-    except KeyError:
-        return None
+def prepare_file_ranker_df(db_path: str) -> pd.DataFrame:
+    conn = open_db(db_path)
+    trees = EntityTree.load_from_db(conn.cursor())
+    graph = FileGraph.load_from_db(conn.cursor())
     scc_df = run_scc(trees.values())
     rows: list[dict[str, Any]] = []
     for filename, tree in trees.items():
@@ -599,10 +595,9 @@ def prepare_file_ranker_df(db_path: str) -> pd.DataFrame | None:
         row["loc"] = scc_df.loc[filename]["Lines"]
         row["lloc"] = scc_df.loc[filename]["Code"]
         row["entities"] = len(entities)
+        row["commits"] = len(graph.commits_of(filename))
         row["content"] = tree.text()
         rows.append(row)
-    if len(rows) == 0:
-        return None
     return pd.DataFrame.from_records(rows)
 
 
