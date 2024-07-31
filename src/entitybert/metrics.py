@@ -1,5 +1,4 @@
 import itertools as it
-import logging
 from dataclasses import dataclass
 from functools import cache
 from typing import Any
@@ -15,8 +14,6 @@ from entitybert.selection import (
 )
 from sentence_transformers import SentenceTransformer, losses
 from torch import Tensor
-
-logger = logging.getLogger(__name__)
 
 _eucledian_dist = losses.BatchHardTripletLossDistanceFunction.eucledian_distance  #  type: ignore
 

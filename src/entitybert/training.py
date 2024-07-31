@@ -20,8 +20,6 @@ from sklearn.cluster import KMeans
 from sklearn.metrics.cluster import normalized_mutual_info_score
 from torch.utils.data import DataLoader
 
-logger = logging.getLogger(__name__)
-
 cosine_distance = losses.BatchHardTripletLossDistanceFunction.cosine_distance  # type: ignore
 eucledian_distance = losses.BatchHardTripletLossDistanceFunction.eucledian_distance  # type: ignore
 os.environ["PYTORCH_MPS_HIGH_WATERMARK_RATIO"] = "0.0"
@@ -119,7 +117,7 @@ class MyEvaluator(SentenceEvaluator):
         epoch: int = -1,
         steps: int = -1,
     ) -> float:
-        logger.info(f"Evaluating in epoch {epoch} after {steps} steps...")
+        logging.info(f"Evaluating in epoch {epoch} after {steps} steps...")
 
         # Calculate scores
         scores: list[float] = []
@@ -135,11 +133,11 @@ class MyEvaluator(SentenceEvaluator):
                     true_labels: list[str] = list(group_df["parent_id"])  # type: ignore
                     nmi = normalized_mutual_info_score(pred_labels, true_labels)
                 except Exception as e:
-                    logger.warn(f"Exception encountered during eval: {e}")
+                    logging.warn(f"Exception encountered during eval: {e}")
                     continue
                 nmis.append(float(nmi))
             score = mean(nmis) if len(nmis) > 0 else 0.0
-            logger.info(f"NMI-{group_size}: {score}")
+            logging.info(f"NMI-{group_size}: {score}")
             scores.append(score)
 
         if output_path is None:
@@ -169,32 +167,32 @@ def train(args: TrainingArgs):
     if output_path.exists():
         raise RuntimeError(f"{output_path} already exists")
 
-    logger.info("Loading train and val dataset...")
+    logging.info("Loading train and val dataset...")
     df_train = pd.read_parquet(args.dataset_train_path)
     df_val = pd.read_parquet(args.dataset_val_path)
 
-    logger.info("Setting up evaluator...")
+    logging.info("Setting up evaluator...")
     evaluator = MyEvaluator(f"{timestamp}.csv", df_val, [2], args.val_files, args.seed)
-    logger.info(evaluator.summary())
+    logging.info(evaluator.summary())
 
-    logger.info("Setting up dataloader and sampler...")
+    logging.info("Setting up dataloader and sampler...")
     dataset = MyDataset(df_train)
     sampler = dataset.sampler(args.sampler_args())
-    logger.info(sampler.summary())
+    logging.info(sampler.summary())
     dataloader = DataLoader(dataset, batch_sampler=sampler)
 
-    logger.info("Loading fresh model...")
+    logging.info("Loading fresh model...")
     model = SentenceTransformer(args.base_model_name)
     dist = cosine_distance if args.use_cosine else eucledian_distance  # type: ignore
     train_loss = losses.BatchHardSoftMarginTripletLoss(model, dist)
     train_loss = losses.Matryoshka2dLoss(model, train_loss, [768, 512, 256, 128, 64])
-    logger.info(f"device: {model.device}")
+    logging.info(f"device: {model.device}")
 
-    logger.info("Checking performance before fine-tuning...")
+    logging.info("Checking performance before fine-tuning...")
     eval_dir = Path(args.models_dir, args.output_model_name, "eval")
     evaluator(model, str(eval_dir), epoch=0, steps=0)
 
-    logger.info("Start training...")
+    logging.info("Start training...")
     model.fit(  # type: ignore
         train_objectives=[(dataloader, train_loss)],
         evaluator=evaluator,

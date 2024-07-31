@@ -6,13 +6,6 @@ import pandas as pd
 from entitybert import fileranking, metrics, selection, training
 from sentence_transformers import SentenceTransformer
 
-logging.basicConfig(
-    level=logging.INFO,
-    format="[%(asctime)s][%(levelname)s][%(module)s:%(lineno)d %(funcName)s] %(message)s",
-    datefmt="%Y-%m-%d %H:%M:%S",
-    handlers=[logging.StreamHandler()],
-)
-
 
 @click.group(context_settings={"show_default": True})
 def cli():
@@ -42,6 +35,7 @@ def split(
     and VAL according to the provided percentages. Each line is uniquely
     assigned to one of these three files. The order of the lines is preserved.
     """
+    logging.debug("split called")
     lines = input.readlines()
     lines_train, lines_test, lines_val = selection.split_lines(
         lines, test_ratio, val_ratio, seed=seed
@@ -61,6 +55,7 @@ def extract_files(input: str, output: TextIOBase):
     database. Executes several queries to get file-level data. Writes file-level
     rows to OUTPUT.
     """
+    logging.debug("extract_files called")
     db_paths = selection.list_db_paths(input)
     files_df = selection.load_multi_files_df(db_paths)
     selection.insert_ldl_cols(files_df)
@@ -79,6 +74,7 @@ def extract_entities(input: str, output: IOBase, ldl: bool, non_ldl: bool) -> No
     file at OUTPUT where each row is an entity from one of the files mentioned
     in INPUT. Only entities with at least one sibling will be output.
     """
+    logging.debug("extract_entities called")
     if ldl and non_ldl:
         raise click.UsageError("Cannot use --ldl and --non-ldl together.")
     files_df = pd.read_csv(input)
@@ -98,6 +94,7 @@ def train(config_file: str) -> None:
     Training arguments are specified in CONFIG_FILE. See config.ini for an
     example.
     """
+    logging.debug("train called")
     training_args = training.TrainingArgs.from_ini(config_file)
     logging.info(f"Loaded training args: {training_args}")
     training.train(training_args)
@@ -108,6 +105,7 @@ def train(config_file: str) -> None:
 @click.argument("OUTPUT", type=click.Path(exists=False))
 @click.option("--model", type=click.Path(exists=True))
 def report_metrics(input: str, output: str, model: str):
+    logging.debug("report_metrics called")
     files_df = pd.read_csv(input)
     model_obj = SentenceTransformer(model)
     with pd.ExcelWriter(output) as writer:
@@ -136,6 +134,7 @@ def export_file_ranker(
 ) -> None:
     """Exports a CSV of file pairs that can be used in the fileranker web
     application."""
+    logging.debug("export_file_ranker called")
     files_df = pd.read_csv(input)
     out_df = fileranking.calc_file_ranker_df(
         files_df, name=name, seed=seed, ratio=ratio, n=n
