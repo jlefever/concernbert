@@ -1,127 +1,30 @@
 import itertools as it
-import logging
 import math
 import random
 import sqlite3
-import subprocess as sp
-import tempfile
-from collections import Counter, defaultdict
-from collections.abc import Iterable
+from collections import defaultdict
 from dataclasses import dataclass
-from functools import cache
-from io import StringIO
 from os import PathLike
 from pathlib import Path
 from sqlite3 import Connection, Cursor
-from typing import Any
+from typing import Any, Iterable, Iterator
 
 import pandas as pd
 from tqdm import tqdm
 
-logger = logging.getLogger(__name__)
-
-_CREATE_TEMP_TABLES = """
-    CREATE TEMP TABLE temp.ancestors AS
-    WITH RECURSIVE ancestors (entity_id, ancestor_id) AS
-    (
-        SELECT E.id AS entity_id, E.id AS ancestor_id
-        FROM entities E
-
-        UNION ALL
-
-        SELECT E.id AS entity_id, A.ancestor_id
-        FROM ancestors A
-        JOIN entities E ON A.entity_id = E.parent_id
-    )
-    SELECT * FROM ancestors;
-
-    CREATE TEMP TABLE temp.filenames AS
-    SELECT
-        E.id AS entity_id,
-        E.simple_id AS simple_id,
-        FE.id AS file_id,
-        FE.name AS filename
-    FROM entities E
-    JOIN temp.ancestors A ON A.entity_id = E.id
-    JOIN entities FE ON FE.id = A.ancestor_id
-    WHERE FE.parent_id IS NULL;
-
-    CREATE TEMP TABLE IF NOT EXISTS temp.levels AS
-    WITH RECURSIVE levels (entity_id, level) AS
-    (
-        SELECT E.id AS entity_id, 0 as level
-        FROM entities E
-        WHERE E.parent_id IS NULL
-
-        UNION ALL
-
-        SELECT E.id AS entity_id, L.level + 1
-        FROM entities E, levels L
-        WHERE E.parent_id = L.entity_id
-    )
-    SELECT * FROM levels;
-"""
-
 _SELECT_FILES = """
     SELECT
         F.filename,
-        MAX(E.end_row) + 1 AS loc,
-        COUNT(E.id) AS n_entities
-    FROM entities E
-    JOIN temp.filenames F ON F.entity_id = E.id
+        CO.loc,
+        CO.lloc,
+        COUNT(DISTINCT F.entity_id) AS entities,
+        COUNT(DISTINCT CH.commit_id) AS commits
+    FROM filenames F
+    LEFT JOIN changes CH ON CH.simple_id = F.simple_id
+    LEFT JOIN contents CO ON CO.content_id = F.content_id
     GROUP BY F.filename
+    ORDER BY F.filename
 """
-
-
-@dataclass
-class _FileDto:
-    filename: str
-    loc: int
-    n_entities: int
-
-
-def _select_files(cursor: Cursor) -> Iterable[_FileDto]:
-    cursor.execute(_SELECT_FILES)
-    yield from (_FileDto(**r) for r in cursor.fetchall())
-
-
-_SELECT_FILE_DEPS = """
-    SELECT DISTINCT SF.filename AS src, TF.filename AS tgt
-    FROM deps D
-    JOIN temp.filenames SF ON SF.entity_id = D.src
-    JOIN temp.filenames TF ON TF.entity_id = D.tgt
-    WHERE SF.filename <> TF.filename
-    ORDER BY SF.filename, TF.filename
-"""
-
-
-@dataclass
-class _FileDepDto:
-    src: str
-    tgt: str
-
-
-def _select_file_deps(cursor: Cursor) -> Iterable[_FileDepDto]:
-    cursor.execute(_SELECT_FILE_DEPS)
-    yield from (_FileDepDto(**r) for r in cursor.fetchall())
-
-
-_SELECT_FILE_CHANGES = """
-    SELECT DISTINCT F.filename, HEX(C.commit_id) AS commit_id
-    FROM changes C
-    JOIN temp.filenames F ON F.simple_id = C.simple_id
-"""
-
-
-@dataclass
-class _FileChangeDto:
-    filename: str
-    commit_id: str
-
-
-def _select_file_changes(cursor: Cursor) -> Iterable[_FileChangeDto]:
-    cursor.execute(_SELECT_FILE_CHANGES)
-    yield from (_FileChangeDto(**r) for r in cursor.fetchall())
 
 
 _SELECT_ENTITIES = """
@@ -159,6 +62,18 @@ class EntityDto:
 
     def text(self, content: bytes) -> str:
         return content[self.start_byte : self.end_byte].decode()
+
+    def is_file(self) -> bool:
+        return self.kind == "File"
+
+    def is_class(self) -> bool:
+        return self.kind == "Class"
+
+    def is_attribute(self) -> bool:
+        return self.kind == "Field"
+
+    def is_method(self) -> bool:
+        return self.kind == "Constructor" or self.kind == "Method"
 
 
 def _select_entities(cursor: Cursor) -> Iterable[EntityDto]:
@@ -223,6 +138,8 @@ _INVALID_ENDINGS = [
     "Guides.java",
     "Sample.java",
     "Samples.java",
+    "Scenario.java",
+    "Scenarios.java",
     "Test.java",
     "Tests.java",
     "Tutorial.java",
@@ -250,6 +167,8 @@ _INVALID_SEGMENTS = set(
         "quickstarts",
         "sample",
         "samples",
+        "scenario",
+        "scenarios",
         "test",
         "testkit",
         "tests",
@@ -259,114 +178,46 @@ _INVALID_SEGMENTS = set(
 )
 
 
-def is_filename_valid(filename: str) -> bool:
+def _is_filename_valid(filename: str) -> bool:
     if any(filename.endswith(e) for e in _INVALID_ENDINGS):
         return False
     segments = filename.lower().split("/")
     return not any(s in _INVALID_SEGMENTS for s in segments)
 
 
-class FileGraph:
-    def __init__(self):
-        self._files: dict[str, _FileDto] = dict()
-        self._incoming: defaultdict[str, set[str]] = defaultdict(set)
-        self._outgoing: defaultdict[str, set[str]] = defaultdict(set)
-        self._file_to_commits: defaultdict[str, set[str]] = defaultdict(set)
-        self._commit_to_files: defaultdict[str, set[str]] = defaultdict(set)
+def _load_files_df(conn: Connection) -> pd.DataFrame:
+    files_df = pd.read_sql(_SELECT_FILES, conn, index_col="filename")
+    files_df = files_df[[_is_filename_valid(str(f)) for f in files_df.index]]
+    if files_df.isnull().values.any():
+        raise RuntimeError("DataFrame contains NaN values.")
+    files_df.sort_index(inplace=True)
+    return files_df
 
-    @staticmethod
-    def load_from_db(cursor: Cursor) -> "FileGraph":
-        graph = FileGraph()
-        for file in _select_files(cursor):
-            graph.add_file(file)
-        for dep in _select_file_deps(cursor):
-            graph.add_dep(dep.src, dep.tgt)
-        for change in _select_file_changes(cursor):
-            graph.add_change(change.filename, change.commit_id)
-        return graph
 
-    def add_file(self, file: _FileDto):
-        self._files[file.filename] = file
+def list_db_paths(dbs_file: str) -> list[str]:
+    return Path(dbs_file).read_text().splitlines()
 
-    def add_dep(self, src: str, tgt: str):
-        self._incoming[tgt].add(src)
-        self._outgoing[src].add(tgt)
 
-    def add_change(self, file: str, commit: str):
-        self._file_to_commits[file].add(commit)
-        self._commit_to_files[commit].add(file)
+def load_multi_files_df(db_paths: list[str]) -> pd.DataFrame:
+    dfs = []
+    for db_path in tqdm(db_paths):
+        with sqlite3.connect(db_path) as conn:
+            df = _load_files_df(conn)
+            df.reset_index(inplace=True)
+            df.insert(0, "db_path", db_path)
+            dfs.append(df)
+    return pd.concat(dfs, ignore_index=True)
 
-    def files(self) -> list[str]:
-        return list(self._files)
 
-    def files_of(self, commit: str) -> set[str]:
-        return self._commit_to_files[commit]
-
-    def commits_of(self, file: str) -> set[str]:
-        return self._file_to_commits[file]
-
-    def in_deps_of(self, file: str) -> set[str]:
-        return self._incoming[file]
-
-    def out_deps_of(self, file: str) -> set[str]:
-        return self._outgoing[file]
-
-    def non_deps_of(self, file: str) -> set[str]:
-        return self._files.keys() - self.in_deps_of(file) - self.out_deps_of(file)
-
-    @cache
-    def cochange_counts(self, file: str) -> Counter[str]:
-        counter = Counter()
-        for commit in self.commits_of(file):
-            counter.update(self.files_of(commit))
-        del counter[file]
-        return counter
-
-    @cache
-    def nontrivial_cochange_counts(self, file: str) -> Counter[str]:
-        return Counter(
-            {k: c - 1 for k, c in self.cochange_counts(file).items() if c > 1}
-        )
-
-    def cochange(self, file_a: str, file_b: str) -> int:
-        return len(self.commits_of(file_a).intersection(self.commits_of(file_b)))
-
-    def cochange_many(self, file_a: str, file_bs: set[str]) -> int:
-        return sum(self.cochange(file_a, b) for b in file_bs)
-
-    def cochange_fan_in(self, file: str) -> int:
-        return self.cochange_many(file, self.in_deps_of(file))
-
-    def cochange_fan_out(self, file: str) -> int:
-        return self.cochange_many(file, self.out_deps_of(file))
-
-    def cochange_cross(self, file: str) -> int:
-        others = self.out_deps_of(file).union(self.in_deps_of(file))
-        return self.cochange_many(file, others)
-
-    def cochange_no_dep(self, file: str) -> int:
-        return self.cochange_many(file, self.non_deps_of(file))
-
-    def to_file_row(self, db_path: str | None, file: str) -> dict[str, Any]:
-        file_dto = self._files[file]
-        row: dict[str, Any] = {}
-        row["db_path"] = db_path
-        row["filename"] = file_dto.filename
-        row["loc"] = file_dto.loc
-        row["n_entities"] = file_dto.n_entities
-        row["is_name_valid"] = is_filename_valid(file_dto.filename)
-        row["fan_in"] = len(self.in_deps_of(file))
-        row["fan_out"] = len(self.out_deps_of(file))
-        row["commits"] = len(self.commits_of(file))
-        row["CC (in)"] = self.cochange_fan_in(file)
-        row["CC (out)"] = self.cochange_fan_out(file)
-        row["CC (cross)"] = self.cochange_cross(file)
-        row["CC (no dep)"] = self.cochange_no_dep(file)
-        return row
-
-    def to_files_df(self, db_path: str) -> pd.DataFrame:
-        rows = [self.to_file_row(db_path, f) for f in self.files()]
-        return pd.DataFrame.from_records(rows)  # type: ignore
+def insert_ldl_cols(files_df: pd.DataFrame, *, q: float = 0.8):
+    is_large1 = files_df["lloc"] >= files_df["lloc"].quantile(q)
+    is_large2 = files_df["entities"] >= files_df["entities"].quantile(q)
+    files_df["is_large"] = is_large1 | is_large2
+    thresholds = dict(files_df.groupby("db_path")["commits"].quantile(q))
+    files_df["is_change_prone"] = files_df["commits"] >= [
+        thresholds[p] for p in files_df["db_path"]
+    ]
+    files_df["is_ldl"] = files_df["is_large"] & files_df["is_change_prone"]
 
 
 class EntityTree:
@@ -409,12 +260,12 @@ class EntityTree:
     def filename(self) -> str:
         return self._filename
 
-    def loc(self) -> int:
-        return self._content.count(0x0A) + 1
-
     def is_leaf(self, id: str) -> bool:
         "Returns true if this entity has no children"
         return len(self._children[id]) == 0
+
+    def children(self, id: str | None) -> list[EntityDto]:
+        return [self._entities[c] for c in self._children[id]]
 
     def leaf_children(self, id: str) -> list[str]:
         "Returns a list of leaf children for this entity"
@@ -425,6 +276,39 @@ class EntityTree:
 
     def nontrivial_leaf_siblings(self) -> list[list[str]]:
         return [s for s in self.leaf_siblings() if len(s) > 1]
+
+    def standard_class(self) -> EntityDto | None:
+        """
+        Returns the id of the standard class if one exists in this file.
+
+        A standard class occurs when a file has exactly one root entity. This
+        root entity is a class with at least two children. All children must be
+        either attributes or methods.
+        """
+        roots = self.children(None)
+        if len(roots) != 1:
+            # Root is more than one element (should not be possible)
+            return None
+        file = roots[0]
+        if not file.is_file():
+            # Root is not a file (should not be possible)
+            return None
+        file_children = self.children(file.id)
+        if len(file_children) != 1:
+            # More than one element directly below file (should not be possible (in Java))
+            return None
+        cls = file_children[0]
+        if not cls.is_class():
+            # Top-level entity is not a class
+            return None
+        cls_children = self.children(cls.id)
+        if len(cls_children) < 2:
+            # Top-level class has less than two children
+            return None
+        if any(not (c.is_attribute() or c.is_method()) for c in cls_children):
+            # Top-level class has direct children that are not attributes or methods
+            return None
+        return cls
 
     def text(self) -> str:
         return self._content.decode()
@@ -461,6 +345,26 @@ class EntityTree:
             for id in siblings:
                 rows.append(self.to_entity_row(db_path, id))
         return pd.DataFrame.from_records(rows)  # type: ignore
+
+
+def iter_entity_trees(
+    files_df: pd.DataFrame, *, pbar: bool
+) -> Iterator[tuple[pd.Series, EntityTree]]:
+    bar = tqdm(total=len(files_df), disable=not pbar)
+    for db_path, group_df in files_df.groupby("db_path"):
+        with open_db(str(db_path)) as conn:
+            trees = EntityTree.load_from_db(conn.cursor())
+            for _, row in group_df.iterrows():
+                bar.update()
+                tree = trees[row["filename"]]  # type: ignore
+                yield (row, tree)
+
+
+def extract_entities_df(files_df: pd.DataFrame, *, pbar: bool) -> pd.DataFrame:
+    dfs: list[pd.DataFrame] = []
+    for row, tree in iter_entity_trees(files_df, pbar=pbar):
+        dfs.append(tree.to_entities_df(row["db_path"]))
+    return pd.concat(dfs, ignore_index=True)
 
 
 class EntityGraph:
@@ -500,9 +404,23 @@ class EntityGraph:
         return graph
 
 
+# This is a blatant copy-paste from "iter_entity_trees"
+def iter_entity_graphs(
+    files_df: pd.DataFrame, *, pbar: bool
+) -> Iterator[tuple[pd.Series, EntityTree, EntityGraph]]:
+    bar = tqdm(total=len(files_df), disable=not pbar)
+    for db_path, group_df in files_df.groupby("db_path"):
+        with open_db(str(db_path)) as conn:
+            trees = EntityTree.load_from_db(conn.cursor())
+            graph = EntityGraph.load_from_db(conn.cursor())
+            for _, row in group_df.iterrows():
+                bar.update()
+                tree = trees[row["filename"]]  # type: ignore
+                yield (row, tree, graph)
+
+
 def open_db(db_path: str | PathLike[str]) -> Connection:
     conn = sqlite3.connect(db_path)
-    conn.executescript(_CREATE_TEMP_TABLES)  # type: ignore
 
     def dict_factory(cursor: Cursor, row: Any):
         fields = [column[0] for column in cursor.description]
@@ -510,95 +428,6 @@ def open_db(db_path: str | PathLike[str]) -> Connection:
 
     conn.row_factory = dict_factory
     return conn
-
-
-def load_files_df(db_paths: list[str], *, pbar: bool = False) -> pd.DataFrame:
-    dfs: list[pd.DataFrame] = []
-    for db_path in tqdm(db_paths, disable=not pbar):
-        graph = FileGraph.load_from_db(open_db(db_path).cursor())
-        dfs.append(graph.to_files_df(db_path))
-    return pd.concat(dfs, ignore_index=True)  # type: ignore
-
-
-def filter_files_df(
-    df: pd.DataFrame,
-    global_quantile: float,
-    local_quantile: float,
-    keep_invalid_names: bool,
-) -> pd.DataFrame:
-    if not keep_invalid_names:
-        df = df[df["is_name_valid"]]
-    columns = ["loc", "n_entities", "CC (in)", "CC (out)", "CC (cross)", "CC (no dep)"]
-    df = df[(df[columns] != 0).all(axis=1)]  # type: ignore
-    global_thresholds = df[columns].quantile(global_quantile)  # type: ignore
-    local_thresholds = df.groupby("db_path")[columns].quantile(local_quantile)  # type: ignore
-    df = df[
-        (df[columns] <= global_thresholds).all(axis=1)  # type: ignore
-        & (
-            ~df.apply(  # type: ignore
-                lambda x: (x[columns] > local_thresholds.loc[x["db_path"]]).any(),  # type: ignore
-                axis=1,
-            )
-        )
-    ]
-    return df
-
-
-def extract_entities_df(df: pd.DataFrame, *, pbar: bool = False) -> pd.DataFrame:
-    dfs: list[pd.DataFrame] = []
-    db_paths: list[str] = sorted(set(df["db_path"]))  # type: ignore
-    bar = tqdm(total=len(df), disable=not pbar)
-    for db_path in db_paths:
-        conn = open_db(db_path)
-        trees = EntityTree.load_from_db(conn.cursor())
-        group_df = df[df["db_path"] == db_path]
-        filenames: list[str] = sorted(set((group_df["filename"])))  # type: ignore
-        for filename in filenames:
-            bar.update()
-            tree = trees[filename]
-            dfs.append(tree.to_entities_df(db_path))
-    return pd.concat(dfs, ignore_index=True)  # type: ignore
-
-
-def run_scc(trees: Iterable[EntityTree]) -> pd.DataFrame:
-    with tempfile.TemporaryDirectory() as temp_dir:
-        for tree in trees:
-            path = Path(temp_dir, tree.filename())
-            path.parent.mkdir(parents=True, exist_ok=True)
-            path.write_text(tree.text())
-        args = ["scc", "--by-file", "--format=csv"]
-        csv = sp.run(args, capture_output=True, cwd=temp_dir).stdout.decode()
-        df = pd.read_csv(StringIO(csv))
-        df = df.drop(columns=["Filename"]).rename(columns={"Provider": "Filename"})
-        return df.set_index("Filename")
-
-
-def prepare_file_ranker_df(db_path: str) -> pd.DataFrame:
-    conn = open_db(db_path)
-    trees = EntityTree.load_from_db(conn.cursor())
-    graph = FileGraph.load_from_db(conn.cursor())
-    scc_df = run_scc(trees.values())
-    rows: list[dict[str, Any]] = []
-    for filename, tree in trees.items():
-        if not is_filename_valid(filename):
-            continue
-        groups = tree.nontrivial_leaf_siblings()
-        if len(groups) != 1:
-            continue
-        siblings = groups[0]
-        entities = [tree[id] for id in siblings]
-        parent_id = entities[0].parent_id
-        if parent_id is None or tree[parent_id].kind != "Class":
-            continue
-        row: dict[str, Any] = dict()
-        row["filename"] = filename
-        row["loc"] = scc_df.loc[filename]["Lines"]
-        row["lloc"] = scc_df.loc[filename]["Code"]
-        row["entities"] = len(entities)
-        row["commits"] = len(graph.commits_of(filename))
-        row["content"] = tree.text()
-        rows.append(row)
-    return pd.DataFrame.from_records(rows)
 
 
 def split_lines(

@@ -14,7 +14,7 @@ rye sync # only needs to be run once
 python -m entitybert --help
 ```
 
-## Collecting Data
+## Examples
 
 Below is an example of building a dataset.
 
@@ -25,11 +25,17 @@ python -m entitybert extract-files _data/dbs_val.txt _data/files_val.csv
 python -m entitybert extract-files _data/dbs_test.txt _data/files_test.csv
 python -m entitybert extract-files _data/dbs_train.txt _data/files_train.csv
 
-python -m entitybert filter-files _data/files_val.csv _data/files_val_filtered.csv
-python -m entitybert filter-files _data/files_test.csv _data/files_test_filtered.csv
-python -m entitybert filter-files _data/files_train.csv _data/files_train_filtered.csv
+python -m entitybert extract-entities --non-ldl _data/files_train.csv _data/entities_train_nonldl.parquet
+```
 
-python -m entitybert extract-entities _data/files_val_filtered.csv _data/entities_val.parquet
-python -m entitybert extract-entities _data/files_test_filtered.csv _data/entities_test.parquet
-python -m entitybert extract-entities _data/files_train_filtered.csv _data/entities_train.parquet
+Below can be used for generating input to the fileranker web application
+
+```bash
+python -m entitybert export-file-ranker --name testset-ldl --seed 42 _data/files_test.csv testset-ldl.csv
+```
+
+Below can be used for generating a metics report
+
+```bash
+python -m entitybert report-metrics --model _models/my_model/ _data/files_dummy.csv _data/metrics_dummy.xlsx
 ```

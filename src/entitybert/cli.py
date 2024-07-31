@@ -3,9 +3,15 @@ from io import IOBase, TextIOBase
 
 import click
 import pandas as pd
-from entitybert import cohesion, selection, training
+from entitybert import fileranking, metrics, selection, training
+from sentence_transformers import SentenceTransformer
 
-logger = logging.getLogger(__name__)
+logging.basicConfig(
+    level=logging.INFO,
+    format="[%(asctime)s][%(levelname)s][%(module)s:%(lineno)d %(funcName)s] %(message)s",
+    datefmt="%Y-%m-%d %H:%M:%S",
+    handlers=[logging.StreamHandler()],
+)
 
 
 @click.group(context_settings={"show_default": True})
@@ -20,7 +26,7 @@ def cli():
 @click.argument("VAL", type=click.File("x"))
 @click.option("--test-ratio", default=0.16, help="Fraction of lines that go to test")
 @click.option("--val-ratio", default=0.04, help="Fraction of lines that go to val")
-@click.option("--seed", help="Random seed used for splitting")
+@click.option("--seed", help="Seed of RNG used for splitting")
 def split(
     input: TextIOBase,
     train: TextIOBase,
@@ -46,60 +52,40 @@ def split(
 
 
 @click.command()
-@click.argument("INPUT", type=click.File("r"))
+@click.argument("INPUT", type=click.Path(exists=True))
 @click.argument("OUTPUT", type=click.File("x"))
-def extract_files(input: TextIOBase, output: TextIOBase):
-    """Extract a CSV listing all files found inside the dbs.
+def extract_files(input: str, output: TextIOBase):
+    """Extract a CSV listing all valid files found inside the dbs.
 
     Reads in each path listed in INPUT and attempts to open it as a SQLite
     database. Executes several queries to get file-level data. Writes file-level
     rows to OUTPUT.
     """
-    db_paths = [line.rstrip() for line in input.readlines()]
-    df = selection.load_files_df(db_paths, pbar=True)
-    df.to_csv(output, index=False)  # type: ignore
+    db_paths = selection.list_db_paths(input)
+    files_df = selection.load_multi_files_df(db_paths)
+    selection.insert_ldl_cols(files_df)
+    files_df.to_csv(output, index=False)  # type: ignore
 
 
 @click.command()
-@click.argument("INPUT", type=click.File("r"))
-@click.argument("OUTPUT", type=click.File("x"))
-@click.option("--global-quantile", default=0.90, help="The global quantile")
-@click.option("--local-quantile", default=0.90, help="The local quantile")
-@click.option("--keep-invalid-names", is_flag=True)
-def filter_files(
-    input: TextIOBase,
-    output: TextIOBase,
-    global_quantile: float,
-    local_quantile: float,
-    keep_invalid_names: bool,
-) -> None:
-    """Filters a CSV created with extract-files.
-
-    Each remaining row will have a "CC (in)", "CC (out)", "CC (cross)", and "CC
-    (no dep)" below both the global and local threshold for that column. The
-    global threshold for a column is calculated across all rows. The local
-    threshold is calculated across only the rows with the same "db_path".
-    Additionally, any row with an invalid name is removed unless
-    --keep-invalid-names is specified.
-    """
-    df = pd.read_csv(input)  # type: ignore
-    df = selection.filter_files_df(
-        df, global_quantile, local_quantile, keep_invalid_names
-    )
-    df.to_csv(output, index=False)  # type: ignore
-
-
-@click.command()
-@click.argument("INPUT", type=click.File("r"))
+@click.argument("INPUT", type=click.Path(exists=True))
 @click.argument("OUTPUT", type=click.File("xb"))
-def extract_entities(input: TextIOBase, output: IOBase) -> None:
+@click.option("--ldl", is_flag=True, help="Only include LDL files")
+@click.option("--non-ldl", is_flag=True, help="Only include non-LDL files")
+def extract_entities(input: str, output: IOBase, ldl: bool, non_ldl: bool) -> None:
     """Extract a parquet table of entities.
 
     Given an INPUT file created by extract-files, this will create a parquet
     file at OUTPUT where each row is an entity from one of the files mentioned
     in INPUT. Only entities with at least one sibling will be output.
     """
-    files_df = pd.read_csv(input)  # type: ignore
+    if ldl and non_ldl:
+        raise click.UsageError("Cannot use --ldl and --non-ldl together.")
+    files_df = pd.read_csv(input)
+    if ldl:
+        files_df = files_df[files_df["is_ldl"]]
+    elif non_ldl:
+        files_df = files_df[~files_df["is_ldl"]]
     entities_df = selection.extract_entities_df(files_df, pbar=True)
     entities_df.to_parquet(output, index=False)  # type:ignore
 
@@ -113,46 +99,53 @@ def train(config_file: str) -> None:
     example.
     """
     training_args = training.TrainingArgs.from_ini(config_file)
-    logger.info(f"Loaded training args: {training_args}")
+    logging.info(f"Loaded training args: {training_args}")
     training.train(training_args)
-
-
-@click.command()
-@click.option("--model", type=click.Path(exists=True))
-@click.argument("INPUT", type=click.File("r"))
-@click.argument("OUTPUT", type=click.Path(exists=False))
-def report_cohesion(model: str, input: TextIOBase, output: str):
-    db_paths = [line.rstrip() for line in input.readlines()]
-    cohesion_df = cohesion.calc_all_cohesion_df(db_paths, model, pbar=True)
-    db_level_coef_df = cohesion.calc_db_level_coefs(cohesion_df)
-    with pd.ExcelWriter(output) as writer:
-        cohesion_df.to_excel(writer, sheet_name="Scores", index=False)
-        db_level_coef_df.to_excel(writer, sheet_name="Correlation", index=False)
 
 
 @click.command()
 @click.argument("INPUT", type=click.Path(exists=True))
 @click.argument("OUTPUT", type=click.Path(exists=False))
-def export_file_ranker(input: str, output: str) -> None:
-    """Exports a CSV of classes that can be used in the fileranker web
-    application.
+@click.option("--model", type=click.Path(exists=True))
+def report_metrics(input: str, output: str, model: str):
+    files_df = pd.read_csv(input)
+    model_obj = SentenceTransformer(model)
+    with pd.ExcelWriter(output) as writer:
+        logging.info(f"Calculating metrics for {len(files_df)} files...")
+        metrics_df = metrics.calc_metrics_df(files_df, model_obj, pbar=True)
+        metrics_df.to_excel(writer, sheet_name="Metrics", index=False)
+        logging.info("Calculating correlations...")
+        coef_df = metrics.calc_db_level_coefs(metrics_df)
+        coef_df.to_excel(writer, sheet_name="DB-level Correlations", index=False)
 
-    Given an INPUT database file, write a CSV to OUTPUT with four columns:
-    'Filename', 'Lines', 'Code', and 'Content'. Only includes files that are
-    simple classes (classes that do not contain nested types) and have a valid
-    name (does not appear to be a test.) Additionally, all classes contain at
-    least two entities.
-    """
-    df = selection.prepare_file_ranker_df(input)
-    if df is None:
-        raise RuntimeError()
-    df.to_csv(output)
+
+@click.command()
+@click.argument("INPUT", type=click.Path(exists=True))
+@click.argument("OUTPUT", type=click.Path(exists=False))
+@click.option("--name", help="Name of sequence")
+@click.option("--seed", type=click.INT, help="Seed of RNG used when sampling pairs")
+@click.option(
+    "--ratio",
+    type=click.FLOAT,
+    default=0.01,
+    help="Fraction of standard deviation of LLOC and Members column (used for tolerance)",
+)
+@click.option("-n", type=click.INT, default=2400, help="Number of pairs to generate")
+def export_file_ranker(
+    input: str, output: str, name: str, seed: int | None, ratio: float, n: int
+) -> None:
+    """Exports a CSV of file pairs that can be used in the fileranker web
+    application."""
+    files_df = pd.read_csv(input)
+    out_df = fileranking.calc_file_ranker_df(
+        files_df, name=name, seed=seed, ratio=ratio, n=n
+    )
+    out_df.to_csv(output)
 
 
 cli.add_command(split)
 cli.add_command(extract_files)
-cli.add_command(filter_files)
 cli.add_command(extract_entities)
 cli.add_command(train)
-cli.add_command(report_cohesion)
+cli.add_command(report_metrics)
 cli.add_command(export_file_ranker)

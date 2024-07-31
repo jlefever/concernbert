@@ -1,6 +1,5 @@
 import itertools as it
 import logging
-from collections import Counter, defaultdict
 from dataclasses import dataclass
 from functools import cache
 from typing import Any
@@ -9,56 +8,40 @@ import numpy as np
 import pandas as pd
 import scipy as sp
 import torch
-from entitybert import selection
 from entitybert.selection import (
     EntityDto,
     EntityGraph,
-    EntityTree,
-    FileGraph,
-    is_filename_valid,
+    iter_entity_graphs,
 )
 from sentence_transformers import SentenceTransformer, losses
 from torch import Tensor
-from tqdm import tqdm
 
 logger = logging.getLogger(__name__)
 
 _eucledian_dist = losses.BatchHardTripletLossDistanceFunction.eucledian_distance  #  type: ignore
 
 
-def is_class(entity: EntityDto) -> bool:
-    return entity.kind == "Class"
-
-
-def is_attribute(entity: EntityDto) -> bool:
-    return entity.kind == "Field"
-
-
-def is_method(entity: EntityDto) -> bool:
-    return entity.kind == "Constructor" or entity.kind == "Method"
-
-
 class MethodAttributeGraph:
-    def __init__(self, entities: list[EntityDto], subgraph: EntityGraph):
-        self._entities: dict[str, EntityDto] = {e.id: e for e in entities}
-        self._ids = set(self._entities.keys())
+    def __init__(self, members: list[EntityDto], subgraph: EntityGraph):
+        self._members: dict[str, EntityDto] = {e.id: e for e in members}
+        self._ids = set(self._members.keys())
         self._subgraph = subgraph
-        if len(self._entities) != len(entities):
-            raise RuntimeError("entities are not unique")
+        if len(self._members) != len(members):
+            raise RuntimeError("members are not unique")
 
     @cache
     def attributes(self) -> list[EntityDto]:
-        return [e for e in self._entities.values() if is_attribute(e)]
+        return [e for e in self._members.values() if e.is_attribute()]
 
     @cache
     def methods(self) -> list[EntityDto]:
-        return [e for e in self._entities.values() if is_method(e)]
+        return [e for e in self._members.values() if e.is_method()]
 
     @cache
     def attributes_for(self, id: str) -> list[EntityDto]:
         outgoing_ids = self._subgraph.only_outgoing(id, self._ids)
-        outgoing_entities = (self._entities[id] for id in outgoing_ids)
-        return [e for e in outgoing_entities if is_attribute(e)]
+        outgoing_members = (self._members[id] for id in outgoing_ids)
+        return [e for e in outgoing_members if e.is_attribute()]
 
     @cache
     def edges(self) -> set[tuple[str, str]]:
@@ -114,7 +97,7 @@ class MethodCouplingGraph:
         n = self.n_nodes()
         e = self.n_edges()
         return (0.5 * (n * (n - 1))) - e
-    
+
     def lcom1_sims(self, sims: dict[tuple[str, str], float]) -> float:
         total = 0
         methods = list(self._mag.methods())
@@ -170,7 +153,9 @@ def calc_dists_to_center(embeddings: Tensor) -> Tensor:
     return dists[-1][:-1]
 
 
-def calc_model_based_cohesion(embeddings: Tensor, kernel: np.ndarray) -> ModelBasedCohesion:
+def calc_model_based_cohesion(
+    embeddings: Tensor, kernel: np.ndarray
+) -> ModelBasedCohesion:
     # Without structure
     dists = calc_dists_to_center(embeddings)
     avg_dist_to_center = dists.mean().cpu().item()
@@ -178,7 +163,7 @@ def calc_model_based_cohesion(embeddings: Tensor, kernel: np.ndarray) -> ModelBa
     sum_dist_to_center = dists.sum().cpu().item()
 
     # With structure
-    kernel = kernel.astype(np.float32) # mps issue
+    kernel = kernel.astype(np.float32)  # mps issue
     kernel_torch = torch.from_numpy(kernel).to(embeddings.device)
     enhanced_embeddings = torch.matmul(kernel_torch, embeddings)
     dists = calc_dists_to_center(enhanced_embeddings)
@@ -196,39 +181,31 @@ def calc_model_based_cohesion(embeddings: Tensor, kernel: np.ndarray) -> ModelBa
     )
 
 
-def calc_measure_df(db_path: str, model: SentenceTransformer) -> pd.DataFrame | None:
-    try:
-        conn = selection.open_db(db_path)
-        file_graph = FileGraph.load_from_db(conn.cursor())
-        trees = EntityTree.load_from_db(conn.cursor())
-        graph = EntityGraph.load_from_db(conn.cursor())
-    except Exception:
-        return None
+def calc_metrics_df(
+    files_df: pd.DataFrame, model: SentenceTransformer, *, pbar: bool
+) -> pd.DataFrame:
     rows: list[dict[str, Any]] = []
-    for filename, tree in tqdm(trees.items()):
-        if not is_filename_valid(filename):
+    for input_row, tree, graph in iter_entity_graphs(files_df, pbar=pbar):
+        row = input_row.to_dict()
+        rows.append(row)
+
+        # Only consider "standard classes"
+        cls = tree.standard_class()
+        row["is_std_class"] = cls is not None
+        if cls is None:
             continue
-        groups = tree.nontrivial_leaf_siblings()
-        if len(groups) != 1:
-            continue
-        siblings = groups[0]
-        entities = [tree[id] for id in siblings]
-        parent_id = entities[0].parent_id
-        if parent_id is None or not is_class(tree[parent_id]):
-            continue
-        parent = tree[parent_id]
-        texts = [tree.entity_text(id) for id in siblings]
-        row: dict[str, Any] = dict()
-        row["DB"] = db_path
-        row["Filename"] = filename
-        row["Name"] = parent.name
-        row["Kind"] = parent.kind
-        row["LOC"] = tree.loc()
-        row["Entities"] = len(entities)
+
+        # "Members" are the methods and attributes of the standard class
+        members = tree.children(cls.id)
+        member_ids = [m.id for m in members]
+        row["members"] = len(members)
+
+        # The "graph" object is the graph for the whole project
+        # Use "subgraph" to get the the graph for the standard file
+        subgraph = graph.subgraph(set(member_ids))
 
         # LCOM1, LCOM2, LCOM3
-        subgraph = graph.subgraph(set(siblings))
-        mag = MethodAttributeGraph(entities, subgraph)
+        mag = MethodAttributeGraph(members, subgraph)
         mcg = MethodCouplingGraph(mag)
         row["Fields"] = len(mag.attributes())
         row["Methods"] = len(mag.methods())
@@ -237,66 +214,49 @@ def calc_measure_df(db_path: str, model: SentenceTransformer) -> pd.DataFrame | 
         row["LCOM3"] = mag.lcom3()
 
         # Model-based Semantic Cohesion
+        texts = [tree.entity_text(id) for id in member_ids]
         embeddings = calc_embeddings(model, texts)
-        kernel = calc_commute_time_kernel(siblings, subgraph.to_pairs())
+        kernel = calc_commute_time_kernel(member_ids, subgraph.to_pairs())
         msc = calc_model_based_cohesion(embeddings, kernel)
         row["MSC_avg"] = msc.avg_dist_to_center
         row["MSC_max"] = msc.max_dist_to_center
         row["MSC_sum"] = msc.sum_dist_to_center
-        row["MSC_sumsq"] = msc.sum_dist_to_center ** 2
+        row["MSC_sumsq"] = msc.sum_dist_to_center**2
         row["MSC_avg_s"] = msc.avg_dist_to_center_s
         row["MSC_max_s"] = msc.max_dist_to_center_s
         row["MSC_sum_s"] = msc.sum_dist_to_center_s
-        row["MSC_sumsq_s"] = msc.sum_dist_to_center ** 2
+        row["MSC_sumsq_s"] = msc.sum_dist_to_center**2
 
         # Weird LCOM1 hybrid
         sims = dict()
         dists = _eucledian_dist(embeddings).cpu().numpy()
-        for i, i_id in enumerate(siblings):
-            for j, j_id in enumerate(siblings):
+        for i, i_id in enumerate(member_ids):
+            for j, j_id in enumerate(member_ids):
                 sims[(i_id, j_id)] = 1 / (1 + dists[i][j])
         row["MSC_LCOM1"] = mcg.lcom1_sims(sims)
         pairwise_sum = 0
-        for i in range(len(siblings)):
-            for j in range(i + 1, len(siblings)):
+        for i in range(len(member_ids)):
+            for j in range(i + 1, len(member_ids)):
                 pairwise_sum += dists[i][j]
         row["MSC_sum_pairwise"] = pairwise_sum
 
-        rows.append(row)
-    return pd.DataFrame.from_records(rows)  # type: ignore
+    return pd.DataFrame.from_records(rows)
 
 
 def get_numeric_cols(df: pd.DataFrame) -> list[str]:
     return [c for c, d in zip(df.columns, df.dtypes) if np.issubdtype(d, np.number)]
 
 
-def calc_db_level_coefs(df: pd.DataFrame) -> pd.DataFrame:
+def calc_db_level_coefs(metrics_df: pd.DataFrame) -> pd.DataFrame:
     rows: list[dict[str, Any]] = []
-    for db, group_df in df.groupby("DB"):
-        for a, b in it.combinations(get_numeric_cols(df), r=2):
+    for db, group_df in metrics_df.groupby("db_path"):
+        for a, b in it.combinations(get_numeric_cols(metrics_df), r=2):
             x, y = list(group_df[a]), list(group_df[b])
             tau = sp.stats.kendalltau(x, y, variant="c").statistic
-            row1 = {"DB": db, "A": a, "B": b}
+            row1 = {"db_path": db, "A": a, "B": b}
             row1["Tau"] = tau
             row2 = row1.copy()
             row2["A"], row2["B"] = b, a
             rows.extend([row1, row2])
     res_df = pd.DataFrame.from_records(rows)
-    return res_df.sort_values(["DB", "A", "B"])
-
-
-def calc_all_cohesion_df(
-    db_paths: list[str], model_path: str, *, pbar: bool = False
-) -> pd.DataFrame:
-    dfs: list[pd.DataFrame] = []
-    skipped_paths: list[str] = []
-    model = SentenceTransformer(model_path)
-    for db_path in tqdm(db_paths, disable=not pbar):
-        cohesion_df = calc_measure_df(db_path, model)
-        if cohesion_df is not None:
-            dfs.append(cohesion_df)
-        else:
-            skipped_paths.append(db_path)
-    for path in skipped_paths:
-        logger.warn(f"Could not load file data from {path}")
-    return pd.concat(dfs, ignore_index=True)  # type: ignore
+    return res_df.sort_values(["db_path", "A", "B"])
