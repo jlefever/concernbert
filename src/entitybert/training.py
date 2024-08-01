@@ -11,6 +11,7 @@ from os import PathLike
 from pathlib import Path
 from statistics import mean
 
+import numpy as np
 import pandas as pd
 import torch
 from entitybert.sampling import MyDataset, SamplerArgs
@@ -75,6 +76,39 @@ class TrainingArgs:
         )
 
 
+def select_rand_parent_group(df: pd.DataFrame, group_size: int) -> pd.DataFrame | None:
+    parent_ids = df["parent_id"].unique()
+    try:
+        selected_parent_ids = np.random.choice(
+            parent_ids, size=group_size, replace=False
+        )
+    except ValueError:
+        return None
+    return df[df["parent_id"].isin(selected_parent_ids)]
+
+
+def select_rand_parent_groups(df: pd.DataFrame, group_size: int, n: int):
+    parent_group_dfs = []
+    df = df.copy()
+    db_paths = df["db_path"].unique()
+    num_parent_ids = len(df["parent_id"].unique())
+    if n > num_parent_ids:
+        logging.warn(
+            f"Entering infinite loop, n ({n}) is greater than {num_parent_ids}"
+        )
+    while True:
+        db_path = random.choice(db_paths)
+        db_group_df = df[df["db_path"] == db_path]
+        parent_group_df = select_rand_parent_group(db_group_df, group_size=group_size)
+        if parent_group_df is None:
+            continue
+        parent_group_dfs.append(parent_group_df)
+        df.drop(parent_group_df.index, inplace=True)
+        if len(parent_group_dfs) >= n:
+            break
+    return parent_group_dfs
+
+
 class MyEvaluator(SentenceEvaluator):
     def __init__(
         self, filename: str, df: pd.DataFrame, group_sizes: list[int], n: int, seed: int
@@ -87,21 +121,12 @@ class MyEvaluator(SentenceEvaluator):
             f"NMI-{s}" for s in group_sizes
         ]
 
-        # Select parent_ids
-        parent_ids: list[str] = sorted(set(self._df["parent_id"]))  # type: ignore
-        random.seed(self._seed)
-        random.shuffle(parent_ids)
-        parent_ids = parent_ids[:n]
-
-        # Create groups from the selected parent_ids
+        random.seed(seed)
+        np.random.seed(seed)
         self._groups: dict[int, list[pd.DataFrame]] = defaultdict(list)
         for group_size in group_sizes:
-            groups = list(it.batched(parent_ids, n=group_size))
-            if len(groups[-1]) != group_size:
-                groups.pop()
-            for group in groups:
-                group_df = self._df[self._df["parent_id"].isin(group)]  # type: ignore
-                self._groups[group_size].append(group_df)
+            groups = select_rand_parent_groups(self._df, group_size, n)
+            self._groups[group_size] = groups
 
     def summary(self) -> str:
         lines: list[str] = []
