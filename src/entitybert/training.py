@@ -210,7 +210,10 @@ def train(args: TrainingArgs):
     model = SentenceTransformer(args.base_model_name)
     dist = cosine_distance if args.use_cosine else eucledian_distance  # type: ignore
     train_loss = losses.BatchHardSoftMarginTripletLoss(model, dist)
-    train_loss = losses.Matryoshka2dLoss(model, train_loss, [768, 512, 256, 128, 64])
+
+    # Disable this because it seems to cause NaNs during training
+    # train_loss = losses.Matryoshka2dLoss(model, train_loss, [768, 512, 256, 128, 64])
+    
     logging.info(f"device: {model.device}")
 
     logging.info("Checking performance before fine-tuning...")
