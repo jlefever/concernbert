@@ -10,6 +10,7 @@ from dataclasses import dataclass
 from os import PathLike
 from pathlib import Path
 from statistics import mean
+from typing import Any
 
 import numpy as np
 import pandas as pd
@@ -44,6 +45,7 @@ class TrainingArgs:
     checkpoint_steps: int
     checkpoint_limit: int
     val_files: int
+    val_batch_size: int
 
     @staticmethod
     def from_ini(path: str | PathLike[str]) -> "TrainingArgs":
@@ -65,6 +67,7 @@ class TrainingArgs:
             checkpoint_steps=int(config["validation"]["checkpoint_steps"]),
             checkpoint_limit=int(config["validation"]["checkpoint_limit"]),
             val_files=int(config["validation"]["val_files"]),
+            val_batch_size=int(config["validation"]["val_batch_size"]),
         )
 
     def sampler_args(self) -> SamplerArgs:
@@ -76,7 +79,29 @@ class TrainingArgs:
         )
 
 
+def calc_embeddings(
+    model: SentenceTransformer,
+    texts: list[str],
+    *,
+    batch_size: int,
+    show_progress_bar: bool = False,
+    convert_to_numpy: bool = True,
+) -> dict[str, Any]:
+    ret: dict[str, Any] = {}
+    with torch.no_grad():
+        for batch in it.batched(set(texts), batch_size):
+            embeddings = model.encode(
+                texts,
+                show_progress_bar=show_progress_bar,
+                convert_to_numpy=convert_to_numpy,
+            )
+            for text, embedding in zip(batch, embeddings):
+                ret[text] = embedding
+    return ret
+
+
 def select_rand_parent_group(df: pd.DataFrame, group_size: int) -> pd.DataFrame | None:
+    """Return all rows that share a randomly chosen parent_id"""
     parent_ids = df["parent_id"].unique()
     try:
         selected_parent_ids = np.random.choice(
@@ -87,7 +112,9 @@ def select_rand_parent_group(df: pd.DataFrame, group_size: int) -> pd.DataFrame 
     return df[df["parent_id"].isin(selected_parent_ids)]
 
 
-def select_rand_parent_groups(df: pd.DataFrame, group_size: int, n: int):
+def select_rand_parent_groups(
+    df: pd.DataFrame, group_size: int, n: int, *, uni: bool = True
+) -> list[pd.DataFrame]:
     parent_group_dfs = []
     df = df.copy()
     db_paths = df["db_path"].unique()
@@ -97,9 +124,8 @@ def select_rand_parent_groups(df: pd.DataFrame, group_size: int, n: int):
             f"Entering infinite loop, n ({n}) is greater than {num_parent_ids}"
         )
     while True:
-        db_path = random.choice(db_paths)
-        db_group_df = df[df["db_path"] == db_path]
-        parent_group_df = select_rand_parent_group(db_group_df, group_size=group_size)
+        df_input = df[df["db_path"] == random.choice(db_paths)] if uni else df
+        parent_group_df = select_rand_parent_group(df_input, group_size=group_size)
         if parent_group_df is None:
             continue
         parent_group_dfs.append(parent_group_df)
@@ -111,12 +137,19 @@ def select_rand_parent_groups(df: pd.DataFrame, group_size: int, n: int):
 
 class MyEvaluator(SentenceEvaluator):
     def __init__(
-        self, filename: str, df: pd.DataFrame, group_sizes: list[int], n: int, seed: int
+        self,
+        filename: str,
+        df: pd.DataFrame,
+        batch_size: int,
+        group_sizes: list[int],
+        n: int,
+        seed: int,
     ):
         self._filename = filename
         self._df = df
         self._group_sizes = group_sizes
         self._seed = seed
+        self._batch_size = batch_size
         self._csv_headers = ["timestamp", "epoch", "steps"] + [
             f"NMI-{s}" for s in group_sizes
         ]
@@ -144,6 +177,13 @@ class MyEvaluator(SentenceEvaluator):
     ) -> float:
         logging.info(f"Evaluating in epoch {epoch} after {steps} steps...")
 
+        # Calculate embeddings
+        texts: list[str] = []
+        for group_dfs in self._groups.values():
+            for group_df in group_dfs:
+                texts.extend(group_df["content"])
+        embeddings = calc_embeddings(model, texts, batch_size=self._batch_size)
+
         # Calculate scores
         scores: list[float] = []
         for group_size in self._group_sizes:
@@ -151,10 +191,10 @@ class MyEvaluator(SentenceEvaluator):
             for group_df in self._groups[group_size]:
                 texts: list[str] = list(group_df["content"])  # type: ignore
                 with torch.no_grad():
-                    embeddings = model.encode(texts, show_progress_bar=False)  # type: ignore
+                    group_embeddings = [embeddings[t] for t in texts]
                 try:
                     kmeans = KMeans(n_clusters=group_size, random_state=self._seed)
-                    pred_labels: list[int] = list(kmeans.fit(embeddings).labels_)  #  type: ignore
+                    pred_labels: list[int] = list(kmeans.fit(group_embeddings).labels_)  #  type: ignore
                     true_labels: list[str] = list(group_df["parent_id"])  # type: ignore
                     nmi = normalized_mutual_info_score(pred_labels, true_labels)
                 except Exception as e:
@@ -197,7 +237,7 @@ def train(args: TrainingArgs):
     df_val = pd.read_parquet(args.dataset_val_path)
 
     logging.info("Setting up evaluator...")
-    evaluator = MyEvaluator(f"{timestamp}.csv", df_val, [2], args.val_files, args.seed)
+    evaluator = MyEvaluator(f"{timestamp}.csv", df_val, args.val_batch_size, [2], args.val_files, args.seed)
     logging.info(evaluator.summary())
 
     logging.info("Setting up dataloader and sampler...")
@@ -213,7 +253,7 @@ def train(args: TrainingArgs):
 
     # Disable this because it seems to cause NaNs during training
     # train_loss = losses.Matryoshka2dLoss(model, train_loss, [768, 512, 256, 128, 64])
-    
+
     logging.info(f"device: {model.device}")
 
     logging.info("Checking performance before fine-tuning...")
