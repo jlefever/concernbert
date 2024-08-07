@@ -90,12 +90,13 @@ def calc_embeddings(
     ret: dict[str, Any] = {}
     with torch.no_grad():
         for batch in it.batched(set(texts), batch_size):
+            batch_lst = list(batch)
             embeddings = model.encode(
-                texts,
+                batch_lst,
                 show_progress_bar=show_progress_bar,
                 convert_to_numpy=convert_to_numpy,
             )
-            for text, embedding in zip(batch, embeddings):
+            for text, embedding in zip(batch_lst, embeddings):
                 ret[text] = embedding
     return ret
 
