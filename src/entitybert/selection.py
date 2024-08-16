@@ -4,12 +4,17 @@ import random
 import sqlite3
 from collections import defaultdict
 from dataclasses import dataclass
+from functools import cache
 from os import PathLike
 from pathlib import Path
 from sqlite3 import Connection, Cursor
 from typing import Any, Iterable, Iterator
 
+import numpy as np
 import pandas as pd
+from ordered_set import OrderedSet as oset
+from scipy.sparse import csr_matrix
+from scipy.sparse.csgraph import connected_components, floyd_warshall
 from tqdm import tqdm
 
 _SELECT_FILES = """
@@ -46,7 +51,7 @@ _SELECT_ENTITIES = """
 """
 
 
-@dataclass
+@dataclass(unsafe_hash=True)
 class EntityDto:
     filename: str
     id: str
@@ -59,6 +64,7 @@ class EntityDto:
     end_byte: int
     end_row: int
     end_column: int
+    _modifiers: frozenset[str] | None = None  # Hacky...
 
     def text(self, content: bytes) -> str:
         return content[self.start_byte : self.end_byte].decode()
@@ -72,8 +78,26 @@ class EntityDto:
     def is_attribute(self) -> bool:
         return self.kind == "Field"
 
+    def is_constructor(self) -> bool:
+        return self.kind == "Constructor"
+
     def is_method(self) -> bool:
-        return self.kind == "Constructor" or self.kind == "Method"
+        return self.kind == "Method" or self.is_constructor()
+
+    def is_abstract(self) -> bool:
+        if self._modifiers is None:
+            raise ValueError()
+        return "abstract" in self._modifiers
+
+    def is_public(self) -> bool:
+        if self._modifiers is None:
+            raise ValueError()
+        return "public" in self._modifiers
+
+    def is_static(self) -> bool:
+        if self._modifiers is None:
+            raise ValueError()
+        return "static" in self._modifiers
 
 
 def _select_entities(cursor: Cursor) -> Iterable[EntityDto]:
@@ -245,6 +269,7 @@ class EntityTree:
             tree = EntityTree(filename, contents[filename])
             for entity in group:
                 tree._add_entity(entity)
+            tree._determine_modifiers()
             trees[filename] = tree
         return trees
 
@@ -253,6 +278,13 @@ class EntityTree:
             raise ValueError(f"Entity (id: {entity.id}) is a root but not a File")
         self._entities[entity.id] = entity
         self._children[entity.parent_id].append(entity.id)
+
+    def _determine_modifiers(self) -> None:
+        for entity in self._entities.values():
+            # Five is the maximum number of keywords that could appear before an
+            # identifier in a Java method.
+            keywords = entity.text(self._content).split()
+            entity._modifiers = frozenset(k.lower() for k in keywords[0:5])
 
     def __getitem__(self, id: str) -> EntityDto:
         return self._entities[id]
@@ -367,56 +399,345 @@ def extract_entities_df(files_df: pd.DataFrame, *, pbar: bool) -> pd.DataFrame:
     return pd.concat(dfs, ignore_index=True)
 
 
-class EntityGraph:
-    def __init__(self):
+def count_components(mat: np.ndarray) -> int:
+    n_components, _ = connected_components(mat, directed=False)
+    return n_components
+
+
+def to_sym_adj_mat(mat: np.ndarray) -> np.ndarray:
+    "Returns a symmetric binary matrix given an possibly asymmetric binary matrix."
+    return np.logical_or(mat, mat.T).astype(int)
+
+
+def to_trans_closure(mat: np.ndarray) -> np.ndarray:
+    "Returns the transitive closure of a binary adjacency matrix. Will include self-loops."
+    reachability_mat = floyd_warshall(mat, directed=True, unweighted=True)
+    return (reachability_mat != np.inf).astype(int)
+
+
+class EntityEdgeSet:
+    def __init__(self, pairs: set[tuple[str, str]]):
+        self._pairs = set((a, b) for a, b in pairs if a != b)
         self._incoming: defaultdict[str, set[str]] = defaultdict(set)
         self._outgoing: defaultdict[str, set[str]] = defaultdict(set)
+        for src, tgt in self._pairs:
+            self._incoming[tgt].add(src)
+            self._outgoing[src].add(tgt)
 
     @staticmethod
-    def load_from_db(cursor: Cursor) -> "EntityGraph":
-        graph = EntityGraph()
-        for dep in _select_deps(cursor):
-            graph.add_dep(dep.src, dep.tgt)
-        return graph
+    def load_from_db(cursor: Cursor) -> "EntityEdgeSet":
+        return EntityEdgeSet({(d.src, d.tgt) for d in _select_deps(cursor)})
 
-    def add_dep(self, src: str, tgt: str):
-        self._incoming[tgt].add(src)
-        self._outgoing[src].add(tgt)
+    def __len__(self) -> int:
+        return len(self._pairs)
 
-    def only_incoming(self, id: str, ids: set[str]) -> set[str]:
-        return self._incoming[id] & ids
+    def __iter__(self) -> Iterator[tuple[str, str]]:
+        return iter(self._pairs)
 
-    def only_outgoing(self, id: str, ids: set[str]) -> set[str]:
-        return self._outgoing[id] & ids
+    @property
+    def pairs(self) -> set[tuple[str, str]]:
+        return self._pairs
 
-    def to_pairs(self) -> set[tuple[str, str]]:
-        pairs: set[tuple[str, str]] = set()
-        for source, targets in self._outgoing.items():
-            for target in targets:
-                pairs.add((source, target))
-        return pairs
+    def outgoing(self, node: str) -> set[str]:
+        return self._outgoing[node]
 
-    def subgraph(self, ids: set[str]) -> "EntityGraph":
-        graph = EntityGraph()
-        for src in ids:
-            for tgt in self._outgoing[src] & ids:
-                graph.add_dep(src, tgt)
-        return graph
+    def incoming(self, node: str) -> set[str]:
+        return self._incoming[node]
+
+    def adjacent(self, node: str) -> set[str]:
+        return self._incoming[node] | self._outgoing[node]
+
+    def subset(self, nodes: set[str]) -> "EntityEdgeSet":
+        edge_set = set()
+        for src in nodes:
+            for tgt in self._outgoing[src] & nodes:
+                edge_set.add((src, tgt))
+        return EntityEdgeSet(edge_set)
+
+
+class EntityNodeSet:
+    def __init__(self, nodes: oset[EntityDto]):
+        self._nodes = nodes
+        self._nodes_by_id = {n.id: n for n in nodes}
+        if len(self._nodes) != len(self._nodes_by_id):
+            raise ValueError("duplicate node ids")
+
+    def __len__(self) -> int:
+        return len(self._nodes)
+
+    def __iter__(self) -> Iterator[EntityDto]:
+        return iter(self._nodes)
+
+    @property
+    def nodes(self) -> oset[EntityDto]:
+        return self._nodes
+
+    def get(self, node: int | str | EntityDto) -> EntityDto:
+        if isinstance(node, EntityDto):
+            return node
+        if isinstance(node, int):
+            return self._nodes[node]
+        return self._nodes_by_id[node]
+
+    def get_ix(self, node: int | str | EntityDto) -> int:
+        if isinstance(node, int):
+            return node
+        if isinstance(node, str):
+            node = self._nodes_by_id[node]
+        return self._nodes.index(node)
+
+    def get_id(self, node: int | str | EntityDto) -> str:
+        if isinstance(node, str):
+            return node
+        if isinstance(node, int):
+            node = self._nodes[node]
+        return node.id
+
+    @cache
+    def attributes(self) -> set[str]:
+        return set(n.id for n in self._nodes if n.is_attribute())
+
+    @cache
+    def methods(self) -> set[str]:
+        return set(n.id for n in self._nodes if n.is_method())
+
+    @cache
+    def abstracts(self) -> set[str]:
+        return set(n.id for n in self._nodes if n.is_abstract())
+
+    @cache
+    def impl_methods(self) -> set[str]:
+        return self.methods() - self.abstracts()
+
+    @cache
+    def publics(self) -> set[str]:
+        return set(n.id for n in self._nodes if n.is_public())
+
+    @cache
+    def constructors(self) -> set[str]:
+        return set(n.id for n in self._nodes if n.is_constructor())
+
+    def subset(self, nodes: set[str]) -> "EntityNodeSet":
+        return EntityNodeSet(oset(n for n in self.nodes if n in nodes))
+
+
+class EntityGraph:
+    def __init__(self, nodes: EntityNodeSet, edges: EntityEdgeSet):
+        self._nodes = nodes
+        self._edges = edges
+
+    def __len__(self) -> int:
+        return len(self._nodes)
+
+    @property
+    def nodes(self) -> EntityNodeSet:
+        return self._nodes
+
+    @property
+    def edges(self) -> EntityEdgeSet:
+        return self._edges
+
+    def get_node(self, node: int | str | EntityDto) -> EntityDto:
+        return self._nodes.get(node)
+
+    def get_node_ix(self, node: int | str | EntityDto) -> int:
+        return self._nodes.get_ix(node)
+
+    def get_node_id(self, node: int | str | EntityDto) -> str:
+        return self._nodes.get_id(node)
+
+    @cache
+    def attribute_refs(self, node: int | str | EntityDto) -> set[str]:
+        outgoing = self._edges.outgoing(self.get_node_id(node))
+        return outgoing & self.nodes.methods()
+
+    def is_edge(self, src: int | str | EntityDto, tgt: int | str | EntityDto) -> bool:
+        src_id = self.get_node_id(src)
+        tgt_id = self.get_node_id(tgt)
+        return tgt_id in self._edges.outgoing(src_id)
+
+    @staticmethod
+    def from_adj_mat(nodes: EntityNodeSet, adj_mat: np.ndarray) -> "EntityGraph":
+        pairs = set(
+            (nodes.get_id(int(i)), nodes.get_id(int(j))) for i, j in np.argwhere(adj_mat > 0)
+        )
+        return EntityGraph(nodes, EntityEdgeSet(pairs))
+
+    def to_adj_mat(self) -> np.ndarray:
+        adj_mat = np.zeros((len(self), len(self)))
+        for src, tgt in self._edges:
+            adj_mat[self.get_node_ix(src), self.get_node_ix(tgt)] = 1
+        return adj_mat
+
+    def to_sym_adj_mat(self) -> np.ndarray:
+        return to_sym_adj_mat(self.to_adj_mat())
+
+    def to_trans_closure(self) -> "EntityGraph":
+        return EntityGraph.from_adj_mat(self.nodes, to_trans_closure(self.to_adj_mat()))
+
+    def subgraph(self, nodes: Iterable[int | str | EntityDto]) -> "EntityGraph":
+        entities: oset[EntityDto] = oset(self.get_node(n) for n in nodes)
+        entity_ids: set[str] = set(e.id for e in entities)
+        return EntityGraph(EntityNodeSet(entities), self._edges.subset(entity_ids))
+
+
+def calc_graph_a(call_graph: EntityGraph) -> np.ndarray:
+    methods = oset(sorted(call_graph.nodes.impl_methods()))
+    adj = np.zeros((len(methods), len(methods)))
+    for m1, m2 in it.combinations(methods, 2):
+        m1_ix = methods.index(m1)
+        m2_ix = methods.index(m2)
+        a1 = call_graph.attribute_refs(m1)
+        a2 = call_graph.attribute_refs(m2)
+        if len(a1 & a2) > 0:
+            adj[m1_ix, m2_ix] = 1
+            adj[m2_ix, m1_ix] = 1
+    return adj
+
+
+def calc_graph_b(call_graph: EntityGraph) -> np.ndarray:
+    methods = oset(sorted(call_graph.nodes.impl_methods()))
+    adj = np.zeros((len(methods), len(methods)))
+    for m1, m2 in it.combinations(methods, 2):
+        m1_ix = methods.index(m1)
+        m2_ix = methods.index(m2)
+        a1 = call_graph.attribute_refs(m1)
+        a2 = call_graph.attribute_refs(m2)
+        shared_attr = len(a1 & a2) > 0
+        forward_edge = call_graph.is_edge(m1, m2)
+        backward_edge = call_graph.is_edge(m2, m1)
+        if shared_attr or forward_edge or backward_edge:
+            adj[m1_ix, m2_ix] = 1
+            adj[m2_ix, m1_ix] = 1
+    return adj
+
+
+def calc_graph_c(call_graph: EntityGraph) -> np.ndarray:
+    call_graph = call_graph.to_trans_closure()
+    methods = call_graph.nodes.impl_methods()
+    constructors = call_graph.nodes.constructors()
+    publics = call_graph.nodes.publics()
+    methods = oset(sorted((methods & publics) - constructors))
+    adj = np.zeros((len(methods), len(methods)))
+    for m1, m2 in it.combinations(methods, 2):
+        m1_ix = methods.index(m1)
+        m2_ix = methods.index(m2)
+        a1 = call_graph.attribute_refs(m1)
+        a2 = call_graph.attribute_refs(m2)
+        if len(a1 & a2) > 0:
+            adj[m1_ix, m2_ix] = 1
+            adj[m2_ix, m1_ix] = 1
+    return adj
+
+
+def calc_lcom1(adj_a: np.ndarray) -> int:
+    upper_tri_mask = np.triu(np.ones(adj_a.shape), k=1)
+    upper_tri_values = adj_a[upper_tri_mask == 1]
+    return np.sum(upper_tri_values == 0)
+
+
+def calc_lcom2(adj_a: np.ndarray) -> int:
+    if np.all(adj_a == 0):
+        return 0
+    upper_tri_mask = np.triu(np.ones(adj_a.shape), k=1)
+    upper_tri_values = adj_a[upper_tri_mask == 1]
+    p = np.sum(upper_tri_values == 0)
+    q = len(upper_tri_values) - p
+    return max(0, p - q)
+
+
+def calc_lcom3(adj_a: np.ndarray) -> int:
+    return count_components(adj_a)
+
+
+def calc_lcom4(adj_b: np.ndarray) -> int:
+    return count_components(adj_b)
+
+
+def calc_co(adj_b: np.ndarray) -> float | None:
+    n_nodes = adj_b.shape[0]
+    if n_nodes < 3:
+        return None
+    upper_tri_mask = np.triu(np.ones(adj_b.shape), k=1)
+    upper_tri_values = adj_b[upper_tri_mask == 1]
+    n_edges = np.sum(upper_tri_values == 1)
+    return (n_edges - (n_nodes - 1)) / ((n_nodes - 1) * (n_nodes - 2))
+
+
+def calc_tcc(adj_c: np.ndarray) -> float | None:
+    n = adj_c.shape[0]
+    if n < 2:
+        return None
+    upper_tri_mask = np.triu(np.ones(adj_c.shape), k=1)
+    upper_tri_values = adj_c[upper_tri_mask == 1]
+    return (2 * np.sum(upper_tri_values == 1)) / (n * (n - 1))
+
+
+def calc_lcc(adj_c: np.ndarray) -> float | None:
+    return calc_tcc(to_trans_closure(adj_c))
+
+
+def calc_lcom5(call_graph: EntityGraph) -> float | None:
+    attributes = call_graph.nodes.attributes()
+    methods = call_graph.nodes.impl_methods()
+    if len(attributes) == 0 or len(methods) < 2:
+        return None
+    total = 0
+    for attribute in attributes:
+        incoming = call_graph.edges.incoming(attribute)
+        total += len(incoming & methods)
+    return (len(methods) - ((1 / len(attributes)) * total)) / (len(methods) - 1)
+
+
+@dataclass
+class CanonicalMetrics:
+    lcom1: int
+    lcom2: int
+    lcom3: int
+    lcom4: int
+    co: float | None
+    tcc: float | None
+    lcc: float | None
+    lcom5: float | None
+
+
+def calc_canonical(call_graph: EntityGraph) -> CanonicalMetrics:
+    adj_a = calc_graph_a(call_graph)
+    adj_b = calc_graph_b(call_graph)
+    adj_c = calc_graph_c(call_graph)
+    return CanonicalMetrics(
+        lcom1=calc_lcom1(adj_a),
+        lcom2=calc_lcom2(adj_a),
+        lcom3=calc_lcom3(adj_a),
+        lcom4=calc_lcom4(adj_b),
+        co=calc_co(adj_b),
+        tcc=calc_tcc(adj_c),
+        lcc=calc_lcc(adj_c),
+        lcom5=calc_lcom5(call_graph),
+    )
 
 
 # This is a blatant copy-paste from "iter_entity_trees"
-def iter_entity_graphs(
+def iter_standard_classes(
     files_df: pd.DataFrame, *, pbar: bool
 ) -> Iterator[tuple[pd.Series, EntityTree, EntityGraph]]:
     bar = tqdm(total=len(files_df), disable=not pbar)
     for db_path, group_df in files_df.groupby("db_path"):
         with open_db(str(db_path)) as conn:
             trees = EntityTree.load_from_db(conn.cursor())
-            graph = EntityGraph.load_from_db(conn.cursor())
+            edge_set = EntityEdgeSet.load_from_db(conn.cursor())
             for _, row in group_df.iterrows():
                 bar.update()
                 tree = trees[row["filename"]]  # type: ignore
-                yield (row, tree, graph)
+                cls = tree.standard_class()
+                if cls is None:
+                    continue
+                members = oset(tree.children(cls.id))
+                member_ids = set(m.id for m in members)
+                subgraph = EntityGraph(
+                    EntityNodeSet(members), edge_set.subset(member_ids)
+                )
+                yield (row, tree, subgraph)
 
 
 def open_db(db_path: str | PathLike[str]) -> Connection:

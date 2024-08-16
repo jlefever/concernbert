@@ -1,7 +1,6 @@
 import configparser
 import csv
 import datetime
-import itertools as it
 import logging
 import os
 import random
@@ -10,11 +9,10 @@ from dataclasses import dataclass
 from os import PathLike
 from pathlib import Path
 from statistics import mean
-from typing import Any
 
 import numpy as np
 import pandas as pd
-import torch
+from entitybert.embeddings import RawEmbedder
 from entitybert.sampling import MyDataset, SamplerArgs
 from sentence_transformers import SentenceTransformer, losses  # type: ignore
 from sentence_transformers.evaluation import SentenceEvaluator  # type: ignore
@@ -77,28 +75,6 @@ class TrainingArgs:
             min_labels=self.min_labels,
             max_points_per_label=self.max_points_per_label,
         )
-
-
-def calc_embeddings(
-    model: SentenceTransformer,
-    texts: list[str],
-    *,
-    batch_size: int,
-    show_progress_bar: bool = False,
-    convert_to_numpy: bool = True,
-) -> dict[str, Any]:
-    ret: dict[str, Any] = {}
-    with torch.no_grad():
-        for batch in it.batched(set(texts), batch_size):
-            batch_lst = list(batch)
-            embeddings = model.encode(
-                batch_lst,
-                show_progress_bar=show_progress_bar,
-                convert_to_numpy=convert_to_numpy,
-            )
-            for text, embedding in zip(batch_lst, embeddings):
-                ret[text] = embedding
-    return ret
 
 
 def select_rand_parent_group(df: pd.DataFrame, group_size: int) -> pd.DataFrame | None:
@@ -177,13 +153,14 @@ class MyEvaluator(SentenceEvaluator):
         steps: int = -1,
     ) -> float:
         logging.info(f"Evaluating in epoch {epoch} after {steps} steps...")
+        embedder = RawEmbedder(model, self._batch_size)
 
         # Calculate embeddings
         texts: list[str] = []
         for group_dfs in self._groups.values():
             for group_df in group_dfs:
                 texts.extend(group_df["content"])
-        embeddings = calc_embeddings(model, texts, batch_size=self._batch_size)
+        embeddings = embedder.embed(texts, pbar=True)
 
         # Calculate scores
         scores: list[float] = []
@@ -191,8 +168,7 @@ class MyEvaluator(SentenceEvaluator):
             nmis: list[float] = []
             for group_df in self._groups[group_size]:
                 texts: list[str] = list(group_df["content"])  # type: ignore
-                with torch.no_grad():
-                    group_embeddings = [embeddings[t] for t in texts]
+                group_embeddings = [embeddings[t] for t in texts]
                 try:
                     kmeans = KMeans(n_clusters=group_size, random_state=self._seed)
                     pred_labels: list[int] = list(kmeans.fit(group_embeddings).labels_)  #  type: ignore
@@ -238,7 +214,9 @@ def train(args: TrainingArgs):
     df_val = pd.read_parquet(args.dataset_val_path)
 
     logging.info("Setting up evaluator...")
-    evaluator = MyEvaluator(f"{timestamp}.csv", df_val, args.val_batch_size, [2], args.val_files, args.seed)
+    evaluator = MyEvaluator(
+        f"{timestamp}.csv", df_val, args.val_batch_size, [2], args.val_files, args.seed
+    )
     logging.info(evaluator.summary())
 
     logging.info("Setting up dataloader and sampler...")

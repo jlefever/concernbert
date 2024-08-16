@@ -41,6 +41,8 @@ jinja2==3.1.4
 joblib==1.4.2
     # via nltk
     # via scikit-learn
+lmdb==1.5.1
+    # via entitybert
 markupsafe==2.1.5
     # via jinja2
 mpmath==1.3.0
@@ -63,6 +65,8 @@ numpy==1.26.4
     # via statsmodels
     # via transformers
 openpyxl==3.1.4
+    # via entitybert
+ordered-set==4.1.0
     # via entitybert
 packaging==24.0
     # via accelerate

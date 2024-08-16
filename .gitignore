@@ -14,5 +14,9 @@ wheels/
 old/
 _data*
 _models*
+_fileranker*
+_embeddings*
+_papers*
+_notes*
 
 entitybert.log

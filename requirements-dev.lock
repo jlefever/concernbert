@@ -178,6 +178,8 @@ kiwisolver==1.4.5
 llvmlite==0.42.0
     # via numba
     # via pynndescent
+lmdb==1.5.1
+    # via entitybert
 markupsafe==2.1.5
     # via jinja2
     # via nbconvert
@@ -233,6 +235,8 @@ numpy==1.26.4
     # via transformers
     # via umap-learn
 openpyxl==3.1.4
+    # via entitybert
+ordered-set==4.1.0
     # via entitybert
 overrides==7.7.0
     # via jupyter-server

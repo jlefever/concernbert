@@ -4,6 +4,7 @@ from io import IOBase, TextIOBase
 import click
 import pandas as pd
 from entitybert import fileranking, metrics, selection, training
+from entitybert.embeddings import load_caching_embedder
 from sentence_transformers import SentenceTransformer
 
 
@@ -104,13 +105,15 @@ def train(config_file: str) -> None:
 @click.argument("INPUT", type=click.Path(exists=True))
 @click.argument("OUTPUT", type=click.Path(exists=False))
 @click.option("--model", type=click.Path(exists=True))
-def report_metrics(input: str, output: str, model: str):
+@click.option("--cache", type=click.Path())
+@click.option("--batch-size", default=24, type=click.INT)
+def report_metrics(input: str, output: str, model: str, cache: str, batch_size):
     logging.debug("report_metrics called")
     files_df = pd.read_csv(input)
-    model_obj = SentenceTransformer(model)
+    embedder = load_caching_embedder(model, cache, batch_size)
     with pd.ExcelWriter(output) as writer:
         logging.info(f"Calculating metrics for {len(files_df)} files...")
-        metrics_df = metrics.calc_metrics_df(files_df, model_obj, pbar=True)
+        metrics_df = metrics.calc_metrics_df(files_df, embedder, pbar=True)
         metrics_df.to_excel(writer, sheet_name="Metrics", index=False)
         logging.info("Calculating correlations...")
         coef_df = metrics.calc_db_level_coefs(metrics_df)
@@ -142,9 +145,30 @@ def export_file_ranker(
     out_df.to_csv(output)
 
 
+@click.command()
+@click.argument("INPUT", type=click.Path(exists=True))
+@click.argument("OUTPUT", type=click.File("x"))
+@click.option(
+    "--max-pos", type=click.INT, help="Max position within a sequence to extract"
+)
+@click.option("--seq", help="Sequence to extract")
+def extract_files_from_seq(input: str, output: TextIOBase, max_pos: int | None, seq: str):
+    """Extract a CSV listing all valid files found inside a sequences.csv.
+
+    Like extract-files, but takes a sequences.csv as INPUT. The resulting OUTPUT
+    csv will contain only the files mentioned in the provided sequences.csv.
+    """
+    logging.debug("extract_files_from_seq called")
+    seq_df = pd.read_csv(input)
+    seq_df = seq_df[seq_df["sequence"] == seq]
+    files_df = fileranking.load_files_from_seq_df(seq_df, max_pos=max_pos)
+    files_df.to_csv(output, index=False)  # type: ignore
+
+
 cli.add_command(split)
 cli.add_command(extract_files)
 cli.add_command(extract_entities)
 cli.add_command(train)
 cli.add_command(report_metrics)
 cli.add_command(export_file_ranker)
+cli.add_command(extract_files_from_seq)

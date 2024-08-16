@@ -25,7 +25,17 @@ python -m entitybert extract-files _data/dbs_val.txt _data/files_val.csv
 python -m entitybert extract-files _data/dbs_test.txt _data/files_test.csv
 python -m entitybert extract-files _data/dbs_train.txt _data/files_train.csv
 
+python -m entitybert extract-entities _data/files_test.csv _data/entities_test_all.parquet
+python -m entitybert extract-entities --ldl _data/files_test.csv _data/entities_test_ldl.parquet
+python -m entitybert extract-entities --non-ldl _data/files_test.csv _data/entities_test_nonldl.parquet
+
+python -m entitybert extract-entities _data/files_train.csv _data/entities_train_all.parquet
+python -m entitybert extract-entities --ldl _data/files_train.csv _data/entities_train_ldl.parquet
 python -m entitybert extract-entities --non-ldl _data/files_train.csv _data/entities_train_nonldl.parquet
+
+python -m entitybert extract-entities _data/files_val.csv _data/entities_val_all.parquet
+python -m entitybert extract-entities --ldl _data/files_val.csv _data/entities_val_ldl.parquet
+python -m entitybert extract-entities --non-ldl _data/files_val.csv _data/entities_val_nonldl.parquet
 ```
 
 Below can be used for generating input to the fileranker web application

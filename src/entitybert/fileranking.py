@@ -3,7 +3,7 @@ from collections import defaultdict
 from typing import Iterator
 
 import pandas as pd
-from entitybert.selection import iter_entity_trees
+from entitybert import selection
 
 
 class _ItemLookup[T]:
@@ -115,7 +115,7 @@ def _is_ascii(text: str):
 
 def _augment_files_df(files_df: pd.DataFrame) -> pd.DataFrame:
     rows = []
-    for row, tree in iter_entity_trees(files_df, pbar=True):
+    for row, tree in selection.iter_entity_trees(files_df, pbar=True):
         cls = tree.standard_class()
         row["is_standard_class"] = cls is not None
         row["members"] = len(tree.children(cls.id)) if cls else None
@@ -172,3 +172,23 @@ def calc_file_ranker_df(
             }
         )
     return pd.DataFrame.from_records(out_rows, index="position")
+
+
+def load_files_from_seq_df(
+    seq_df: pd.DataFrame, *, max_pos: int | None
+) -> pd.DataFrame:
+    df = seq_df
+    if max_pos is not None:
+        df = df[df["position"] <= max_pos]
+    a_df = df[["project_a", "filename_a"]].drop_duplicates()
+    b_df = df[["project_b", "filename_b"]].drop_duplicates()
+    a_df = a_df.rename(columns={"project_a": "db_path", "filename_a": "filename"})
+    b_df = b_df.rename(columns={"project_b": "db_path", "filename_b": "filename"})
+    mentioned_df = pd.concat([a_df, b_df], ignore_index=True).drop_duplicates()
+    mentioned_df = mentioned_df.sort_values(["db_path", "filename"]).reset_index()
+    db_paths = sorted(set(mentioned_df["db_path"]))
+    files_df = selection.load_multi_files_df(db_paths)
+    merged_df = mentioned_df.merge(files_df, how="left", on=["db_path", "filename"])
+    if merged_df.isnull().values.any():
+        raise RuntimeError("failed to load all files")
+    return merged_df.drop(columns="index")
