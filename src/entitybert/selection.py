@@ -559,7 +559,8 @@ class EntityGraph:
     @staticmethod
     def from_adj_mat(nodes: EntityNodeSet, adj_mat: np.ndarray) -> "EntityGraph":
         pairs = set(
-            (nodes.get_id(int(i)), nodes.get_id(int(j))) for i, j in np.argwhere(adj_mat > 0)
+            (nodes.get_id(int(i)), nodes.get_id(int(j)))
+            for i, j in np.argwhere(adj_mat > 0)
         )
         return EntityGraph(nodes, EntityEdgeSet(pairs))
 
@@ -715,29 +716,6 @@ def calc_canonical(call_graph: EntityGraph) -> CanonicalMetrics:
         lcc=calc_lcc(adj_c),
         lcom5=calc_lcom5(call_graph),
     )
-
-
-# This is a blatant copy-paste from "iter_entity_trees"
-def iter_standard_classes(
-    files_df: pd.DataFrame, *, pbar: bool
-) -> Iterator[tuple[pd.Series, EntityTree, EntityGraph]]:
-    bar = tqdm(total=len(files_df), disable=not pbar)
-    for db_path, group_df in files_df.groupby("db_path"):
-        with open_db(str(db_path)) as conn:
-            trees = EntityTree.load_from_db(conn.cursor())
-            edge_set = EntityEdgeSet.load_from_db(conn.cursor())
-            for _, row in group_df.iterrows():
-                bar.update()
-                tree = trees[row["filename"]]  # type: ignore
-                cls = tree.standard_class()
-                if cls is None:
-                    continue
-                members = oset(tree.children(cls.id))
-                member_ids = set(m.id for m in members)
-                subgraph = EntityGraph(
-                    EntityNodeSet(members), edge_set.subset(member_ids)
-                )
-                yield (row, tree, subgraph)
 
 
 def open_db(db_path: str | PathLike[str]) -> Connection:

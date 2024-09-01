@@ -110,10 +110,11 @@ def train(config_file: str) -> None:
 def report_metrics(input: str, output: str, model: str, cache: str, batch_size):
     logging.debug("report_metrics called")
     files_df = pd.read_csv(input)
-    embedder = load_caching_embedder(model, cache, batch_size)
     with pd.ExcelWriter(output) as writer:
         logging.info(f"Calculating metrics for {len(files_df)} files...")
-        metrics_df = metrics.calc_metrics_df(files_df, embedder, pbar=True)
+        metrics_df = metrics.calc_metrics_df(
+            files_df, model, cache, batch_size, pbar=True
+        )
         metrics_df.to_excel(writer, sheet_name="Metrics", index=False)
         logging.info("Calculating correlations...")
         coef_df = metrics.calc_db_level_coefs(metrics_df)
@@ -152,7 +153,9 @@ def export_file_ranker(
     "--max-pos", type=click.INT, help="Max position within a sequence to extract"
 )
 @click.option("--seq", help="Sequence to extract")
-def extract_files_from_seq(input: str, output: TextIOBase, max_pos: int | None, seq: str):
+def extract_files_from_seq(
+    input: str, output: TextIOBase, max_pos: int | None, seq: str
+):
     """Extract a CSV listing all valid files found inside a sequences.csv.
 
     Like extract-files, but takes a sequences.csv as INPUT. The resulting OUTPUT

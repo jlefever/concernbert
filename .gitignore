@@ -18,5 +18,6 @@ _fileranker*
 _embeddings*
 _papers*
 _notes*
+_cache*
 
 entitybert.log

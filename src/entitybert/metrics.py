@@ -1,83 +1,184 @@
 import itertools as it
+import logging
 from dataclasses import dataclass
-from functools import cache
 from typing import Any
 
 import numpy as np
 import pandas as pd
 import scipy as sp
-import torch
-import entitybert.lcsm
+from ordered_set import OrderedSet as oset
+from scipy.spatial.distance import cdist, euclidean
+from tqdm import tqdm
+
 from entitybert.embeddings import Embedder, load_caching_embedder
 from entitybert.selection import (
-    EntityDto,
+    EntityEdgeSet,
     EntityGraph,
+    EntityNodeSet,
     EntityTree,
     calc_canonical,
-    iter_standard_classes,
+    open_db,
 )
-from ordered_set import OrderedSet as oset
-from scipy.sparse import csr_matrix
-from scipy.sparse.csgraph import connected_components, floyd_warshall
-from sentence_transformers import SentenceTransformer, losses
-from torch import Tensor
-
-_eucledian_dist = losses.BatchHardTripletLossDistanceFunction.eucledian_distance  #  type: ignore
+from entitybert.semantic import MyBert, MyCorpus, MyDoc2Vec, MyLsi
 
 
-def calc_commute_time_kernel(sym_adj_mat: np.ndarray) -> np.ndarray:
-    degree_mat = np.diag(sym_adj_mat.sum(axis=1))
-    laplacian_mat = degree_mat - sym_adj_mat
-    laplacian_pseudo_inverse = np.linalg.pinv(laplacian_mat)
-    return laplacian_pseudo_inverse
+def to_centroid(X: np.ndarray) -> np.ndarray:
+    return np.mean(X, axis=0)
+
+
+# From https://stackoverflow.com/a/30305181
+def to_geometric_median(X: np.ndarray, eps=1e-8) -> np.ndarray:
+    y = np.mean(X, 0)
+
+    while True:
+        D = cdist(X, [y])
+        nonzeros = (D != 0)[:, 0]
+
+        Dinv = 1 / D[nonzeros]
+        Dinvs = np.sum(Dinv)
+        W = Dinv / Dinvs
+        T = np.sum(W * X[nonzeros], 0)
+
+        num_zeros = len(X) - np.sum(nonzeros)
+        if num_zeros == 0:
+            y1 = T
+        elif num_zeros == len(X):
+            return y
+        else:
+            R = (T - y) * Dinvs
+            r = np.linalg.norm(R)
+            rinv = 0 if r == 0 else num_zeros / r
+            y1 = max(0, 1 - rinv) * T + min(1, rinv) * y
+
+        if euclidean(y, y1) < eps:
+            return y1
+
+        y = y1
+
+
+def to_medoid(X: np.ndarray) -> np.ndarray:
+    return X[np.argmin(np.sum(cdist(X, X), axis=0))]
+
+
+def to_marginal_median(X: np.ndarray) -> np.ndarray:
+    return np.median(X, axis=0)
+
+
+def to_aad(X: np.ndarray) -> float:
+    centroid = to_centroid(X)
+    centroid_residuals = cdist(X, [centroid])
+    return float(np.mean(centroid_residuals))
+
+
+def to_sim_mat(embeddings: np.ndarray, *, euclidean: bool = False) -> np.ndarray:
+    if euclidean:
+        dists = cdist(embeddings, embeddings, metric="euclidean")
+        return 1 / (1 + dists)
+    dists = cdist(embeddings, embeddings, metric="cosine")
+    return (dists - 1) * -1
+
+
+def to_dist_mat(embeddings: np.ndarray) -> np.ndarray:
+    return cdist(embeddings, embeddings, metric="euclidean")
+
+
+def to_acsm(sim_mat: np.ndarray) -> float:
+    "Returns ACSM (defined by Marcus and Poshyvanyk)"
+    return float(np.mean(sim_mat[np.triu_indices(len(sim_mat), k=1)]))
+
+
+def to_acosm(sim_mat: np.ndarray) -> float:
+    "Returns ACOSM (defined by Miholca)"
+    return to_acsm(sim_mat)
+
+
+def to_c3(acsm: float) -> float:
+    "Returns C3 (defined by Marcus and Poshyvanyk)"
+    return max(acsm, 0)
+
+
+def to_cocc(acosm: float) -> float:
+    "Returns COCC (defined by Miholca)"
+    return to_c3(acosm)
+
+
+def to_lcsm(sim_mat: np.ndarray, acsm: float) -> int:
+    "Returns LCSM (defined by Marcus and Poshyvanyk)"
+    n = sim_mat.shape[0]
+    neighbors: list[set[int]] = []
+    for i in range(n):
+        indices = np.argwhere(sim_mat[i] > acsm).flatten()
+        neighbors.append(set(j for j in indices if j != i))
+    if all(len(n) == 0 for n in neighbors):
+        return 0
+    p, q = 0, 0
+    for a, b in it.combinations(neighbors, 2):
+        if len(a & b) == 0:
+            p += 1
+        else:
+            q += 1
+    return max(0, p - q)
+
+
+def to_lcosm(sim_mat: np.ndarray, acosm: float) -> float | None:
+    "Returns LCOSM (defined by Miholca)"
+    n = sim_mat.shape[0]
+    if n < 2:
+        return None
+    lcsm = to_lcsm(sim_mat, acosm)
+    return lcsm / ((n * (n - 1)) / 2)
 
 
 @dataclass
 class ModelBasedCohesion:
-    avg_dist_to_center: float
-    max_dist_to_center: float
-    sum_dist_to_center: float
-    avg_dist_to_center_s: float
-    max_dist_to_center_s: float
-    sum_dist_to_center_s: float
+    mean_dist_to_centroid: float
+    median_dist_to_centroid: float
+    std_dist_to_centroid: float
+    mean_dist_to_geometric_median: float
+    median_dist_to_geometric_median: float
+    std_dist_to_geometric_median: float
+    mean_dist_to_medoid: float
+    median_dist_to_medoid: float
+    std_dist_to_medoid: float
+    mean_dist_to_marginal_median: float
+    median_dist_to_marginal_median: float
+    std_dist_to_marginal_median: float
 
 
-def calc_dists_to_center(embeddings: Tensor) -> Tensor:
-    center = torch.mean(embeddings, dim=0).unsqueeze(0)  # type: ignore
-    dists = _eucledian_dist(torch.vstack((embeddings, center)))  # type: ignore
-    return dists[-1][:-1]
+def to_model_based_cohesion(embeddings: np.ndarray) -> ModelBasedCohesion:
+    centroid = to_centroid(embeddings)
+    geometric_median = to_geometric_median(embeddings)
+    medoid = to_medoid(embeddings)
+    marginal_median = to_marginal_median(embeddings)
 
-
-def calc_model_based_cohesion(
-    embeddings: Tensor, kernel: np.ndarray
-) -> ModelBasedCohesion:
-    # Without structure
-    dists = calc_dists_to_center(embeddings)
-    avg_dist_to_center = dists.mean().cpu().item()
-    max_dist_to_center = dists.max().cpu().item()
-    sum_dist_to_center = dists.sum().cpu().item()
-
-    # With structure
-    kernel = kernel.astype(np.float32)  # mps issue
-    kernel_torch = torch.from_numpy(kernel).to(embeddings.device)
-    enhanced_embeddings = torch.matmul(kernel_torch, embeddings)
-    dists = calc_dists_to_center(enhanced_embeddings)
-    avg_dist_to_center_s = dists.mean().cpu().item()
-    max_dist_to_center_s = dists.max().cpu().item()
-    sum_dist_to_center_s = dists.sum().cpu().item()
+    centroid_residuals = cdist(embeddings, [centroid])
+    geometric_median_residuals = cdist(embeddings, [geometric_median])
+    medoid_residuals = cdist(embeddings, [medoid])
+    marginal_median_residuals = cdist(embeddings, [marginal_median])
 
     return ModelBasedCohesion(
-        avg_dist_to_center,
-        max_dist_to_center,
-        sum_dist_to_center,
-        avg_dist_to_center_s,
-        max_dist_to_center_s,
-        sum_dist_to_center_s,
+        mean_dist_to_centroid=float(np.mean(centroid_residuals)),
+        median_dist_to_centroid=float(np.median(centroid_residuals)),
+        std_dist_to_centroid=float(np.std(centroid_residuals)),
+        mean_dist_to_geometric_median=float(np.mean(geometric_median_residuals)),
+        median_dist_to_geometric_median=float(np.median(geometric_median_residuals)),
+        std_dist_to_geometric_median=float(np.std(geometric_median_residuals)),
+        mean_dist_to_medoid=float(np.mean(medoid_residuals)),
+        median_dist_to_medoid=float(np.median(medoid_residuals)),
+        std_dist_to_medoid=float(np.std(medoid_residuals)),
+        mean_dist_to_marginal_median=float(np.mean(marginal_median_residuals)),
+        median_dist_to_marginal_median=float(np.median(marginal_median_residuals)),
+        std_dist_to_marginal_median=float(np.std(marginal_median_residuals)),
     )
 
 
 def calc_metrics_row(
-    tree: EntityTree, subgraph: EntityGraph, embedder: Embedder
+    tree: EntityTree,
+    subgraph: EntityGraph,
+    embedder: Embedder,
+    lsis: dict[int, MyLsi],
+    d2vs: dict[int, MyDoc2Vec],
+    bert: MyBert,
 ) -> dict[str, Any]:
     row: dict[str, Any] = dict()
 
@@ -85,6 +186,13 @@ def calc_metrics_row(
     row["Members"] = len(subgraph.nodes)
     row["Methods"] = len(subgraph.nodes.methods())
     row["Fields"] = len(subgraph.nodes.attributes())
+
+    # Our metric (calculated with methods + fields)
+    texts = [tree.entity_text(m.id) for m in subgraph.nodes]
+    embeddings_dict = embedder.embed(texts, pbar=False)
+    embeddings = np.array([embeddings_dict[t] for t in texts])
+    cdi = to_model_based_cohesion(embeddings)
+    row["CDI"] = cdi.mean_dist_to_centroid
 
     # Canonical metrics
     canon = calc_canonical(subgraph)
@@ -97,47 +205,118 @@ def calc_metrics_row(
     row["LCC"] = canon.lcc
     row["LCOM5"] = canon.lcom5
 
-    # Marcus & Poshyvanyk
-    docs = entitybert.lcsm.find_documents(tree.text())
-    if len(docs) == 0:
-        row["NC3"] = None
-        row["LCSM"] = None
-    else:
-        sim_mat = entitybert.lcsm.calc_sim_mat(docs)
-        acsm = entitybert.lcsm.calc_acsm(sim_mat)
-        c3 = entitybert.lcsm.calc_c3(acsm)
-        lcsm = entitybert.lcsm.calc_lcsm(sim_mat, acsm)
-        row["NC3"] = -1 * c3
-        row["LCSM"] = lcsm
+    # LSI embeddings and similarity matrices (used by Marcus and Poshyvanyk)
+    lsi_embeddings: dict[int, np.ndarray] = {}
+    for dim, lsi in lsis.items():
+        lsi_embeddings[dim] = lsi.embed(tree.filename())
+    lsi_sim_mats: dict[int, np.ndarray] = {}
+    for dim, emb in lsi_embeddings.items():
+        lsi_sim_mats[dim] = to_sim_mat(emb)
+
+    # Doc2Vec embeddings and similarity matrices (used by Miholca)
+    d2v_embeddings: dict[int, np.ndarray] = {}
+    for dim, d2v in d2vs.items():
+        d2v_embeddings[dim] = d2v.embed(tree.filename())
+    d2v_sim_mats: dict[int, np.ndarray] = {}
+    for dim, emb in d2v_embeddings.items():
+        d2v_sim_mats[dim] = to_sim_mat(emb)
+
+    # BERT embeddings and similarity matrices (used by us)
+    # These are used to make a comparison with prior work that only uses methods
+    bert_embeddings = bert.embed(tree.filename())
+    bert_sim_mat = to_sim_mat(bert_embeddings)
+
+    # AAD
+    for dim, sim_mat in lsi_sim_mats.items():
+        row[f"AAD(LSI-{dim})"] = to_aad(sim_mat)
+    for dim, sim_mat in d2v_sim_mats.items():
+        row[f"AAD(D2V-{dim})"] = to_aad(sim_mat)
+    row["AAD(BERT)"] = to_aad(bert_sim_mat)
+
+    # Negative C3
+    for dim, sim_mat in lsi_sim_mats.items():
+        row[f"NC3(LSI-{dim})"] = -1 * to_c3(to_acsm(sim_mat))
+    for dim, sim_mat in d2v_sim_mats.items():
+        row[f"NC3(D2V-{dim})"] = -1 * to_c3(to_acsm(sim_mat))
+    row["NC3(BERT)"] = -1 * to_c3(to_acsm(bert_sim_mat))
+
+    # LCSM
+    for dim, sim_mat in lsi_sim_mats.items():
+        row[f"LCSM(LSI-{dim})"] = to_lcsm(sim_mat, to_acsm(sim_mat))
+    for dim, sim_mat in d2v_sim_mats.items():
+        row[f"LCSM(D2V-{dim})"] = to_lcsm(sim_mat, to_acsm(sim_mat))
+    row["LCSM(BERT)"] = to_lcsm(bert_sim_mat, to_acsm(bert_sim_mat))
+    
+    # LCOSM
+    for dim, sim_mat in lsi_sim_mats.items():
+        row[f"LCOSM(LSI-{dim})"] = to_lcosm(sim_mat, to_acsm(sim_mat))
+    for dim, sim_mat in d2v_sim_mats.items():
+        row[f"LCOSM(D2V-{dim})"] = to_lcosm(sim_mat, to_acsm(sim_mat))
+    row["LCOSM(BERT)"] = to_lcosm(bert_sim_mat, to_acsm(bert_sim_mat))
 
     # Model-based Semantic Cohesion
-    texts = [tree.entity_text(m.id) for m in subgraph.nodes]
-    embeddings_dict = embedder.embed(texts, pbar=False)
-    embeddings_arr = np.array([embeddings_dict[t] for t in texts])
-    embeddings = torch.Tensor(embeddings_arr).to(embedder.device())
-    kernel = calc_commute_time_kernel(subgraph.to_sym_adj_mat())
-    msc = calc_model_based_cohesion(embeddings, kernel)
-    row["MSC_avg"] = msc.avg_dist_to_center
-    row["MSC_max"] = msc.max_dist_to_center
-    row["MSC_sum"] = msc.sum_dist_to_center
-    row["MSC_sumsq"] = msc.sum_dist_to_center**2
-    row["MSC_avg_s"] = msc.avg_dist_to_center_s
-    row["MSC_max_s"] = msc.max_dist_to_center_s
-    row["MSC_sum_s"] = msc.sum_dist_to_center_s
-    row["MSC_sumsq_s"] = msc.sum_dist_to_center**2
-
+    # texts = [tree.entity_text(m.id) for m in subgraph.nodes]
+    # embeddings_dict = embedder.embed(texts, pbar=False)
+    # embeddings = np.array([embeddings_dict[t] for t in texts])
+    # cdi = to_model_based_cohesion(embeddings)
+    # row["CDI_MEAN_CENT"] = cdi.mean_dist_to_centroid
+    # row["CDI_MED_CENT"] = cdi.median_dist_to_centroid
+    # row["CDI_STD_CENT"] = cdi.std_dist_to_centroid
+    # row["CDI_MEAN_GMED"] = cdi.mean_dist_to_geometric_median
+    # row["CDI_MED_GMED"] = cdi.median_dist_to_geometric_median
+    # row["CDI_STD_GMED"] = cdi.std_dist_to_geometric_median
+    # row["CDI_MEAN_MEDO"] = cdi.mean_dist_to_medoid
+    # row["CDI_MED_MEDO"] = cdi.median_dist_to_medoid
+    # row["CDI_STD_MEDO"] = cdi.std_dist_to_medoid
+    # row["CDI_MEAN_MMED"] = cdi.mean_dist_to_marginal_median
+    # row["CDI_MED_MMED"] = cdi.median_dist_to_marginal_median
+    # row["CDI_STD_MMED"] = cdi.std_dist_to_marginal_median
     return row
 
 
 def calc_metrics_df(
-    files_df: pd.DataFrame, embedder: Embedder, *, pbar: bool
+    files_df: pd.DataFrame, model: str, cache_dir: str, batch_size: int, *, pbar: bool
 ) -> pd.DataFrame:
     rows: list[dict[str, Any]] = []
-    for input_row, tree, subgraph in iter_standard_classes(files_df, pbar=pbar):
-        row = input_row.to_dict()
-        metrics_row = calc_metrics_row(tree, subgraph, embedder)
-        row.update(metrics_row)
-        rows.append(row)
+
+    # Load embedder
+    embedder = load_caching_embedder(model, cache_dir, batch_size)
+
+    bar = tqdm(total=len(files_df), disable=not pbar)
+    for db_path, group_df in files_df.groupby("db_path"):
+        with open_db(str(db_path)) as conn:
+            trees = EntityTree.load_from_db(conn.cursor())
+            edge_set = EntityEdgeSet.load_from_db(conn.cursor())
+            logging.info(f"Collecting corpus for {db_path}...")
+            files_iter = ((t.filename(), t.text()) for t in trees.values())
+            corpus = MyCorpus(str(db_path), cache_dir, files_iter)
+            dims: list[int] = [10, 64, 256, 758]
+            lsis: dict[int, MyLsi] = {}
+            for dim in dims:
+                logging.info(f"Running LSI-{dim}...")
+                lsis[dim] = MyLsi(corpus, dim=dim, cache_dir=cache_dir)
+            d2vs: dict[int, MyDoc2Vec] = {}
+            for dim in dims:
+                logging.info(f"Running D2V-{dim}...")
+                d2vs[dim] = MyDoc2Vec(corpus, dim=dim, cache_dir=cache_dir)
+            bert = MyBert(corpus, embedder)
+            for _, input_row in group_df.iterrows():
+                bar.update()
+                tree = trees[input_row["filename"]]  # type: ignore
+                cls = tree.standard_class()
+                if cls is None:
+                    continue
+                members = oset(tree.children(cls.id))
+                member_ids = set(m.id for m in members)
+                subgraph = EntityGraph(
+                    EntityNodeSet(members), edge_set.subset(member_ids)
+                )
+                row = input_row.to_dict()
+                metrics_row = calc_metrics_row(
+                    tree, subgraph, embedder, lsis, d2vs, bert
+                )
+                row.update(metrics_row)
+                rows.append(row)
     return pd.DataFrame.from_records(rows)
 
 
