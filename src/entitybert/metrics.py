@@ -287,8 +287,11 @@ def calc_metrics_df(
         with open_db(str(db_path)) as conn:
             trees = EntityTree.load_from_db(conn.cursor())
             edge_set = EntityEdgeSet.load_from_db(conn.cursor())
-            logging.info(f"Collecting corpus for {db_path}...")
+            logging.info(f"Collecting corpus for {db_path} ({len(trees)} files)...")
             files_iter = ((t.filename(), t.text()) for t in trees.values())
+
+            # Throw out any very large files
+            files_iter = ((f, t) for f, t in files_iter if len(t) <= 2_000_000)
             corpus = MyCorpus(str(db_path), cache_dir, files_iter)
             dims: list[int] = [10, 64, 256, 758]
             lsis: dict[int, MyLsi] = {}

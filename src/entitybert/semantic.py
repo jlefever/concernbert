@@ -325,7 +325,6 @@ class MyLsi:
     def __init__(self, corpus: MyCorpus, dim: int, cache_dir: str):
         self._corpus = corpus
         cache_path = Path(cache_dir, corpus.name, f"lsi-{dim}.model")
-        print(cache_path)
         if cache_path.exists():
             self._lsi = LsiModel.load(str(cache_path))
             return
@@ -350,7 +349,6 @@ class MyDoc2Vec:
     def __init__(self, corpus: MyCorpus, dim: int, cache_dir: str):
         self._corpus = corpus
         cache_path = Path(cache_dir, corpus.name, f"d2v-{dim}.model")
-        print(cache_path)
         if cache_path.exists():
             self._doc2vec: Doc2Vec = Doc2Vec.load(str(cache_path))  # type: ignore
             return
