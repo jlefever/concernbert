@@ -293,7 +293,7 @@ def calc_metrics_df(
             # Throw out any very large files
             files_iter = ((f, t) for f, t in files_iter if len(t) <= 2_000_000)
             corpus = MyCorpus(str(db_path), cache_dir, files_iter)
-            dims: list[int] = [10, 64, 256, 758]
+            dims: list[int] = [10, 64, 256, 768]
             lsis: dict[int, MyLsi] = {}
             for dim in dims:
                 logging.info(f"Running LSI-{dim}...")
@@ -314,12 +314,15 @@ def calc_metrics_df(
                 subgraph = EntityGraph(
                     EntityNodeSet(members), edge_set.subset(member_ids)
                 )
-                row = input_row.to_dict()
-                metrics_row = calc_metrics_row(
-                    tree, subgraph, embedder, lsis, d2vs, bert
-                )
-                row.update(metrics_row)
-                rows.append(row)
+                try:
+                    row = input_row.to_dict()
+                    metrics_row = calc_metrics_row(
+                        tree, subgraph, embedder, lsis, d2vs, bert
+                    )
+                    row.update(metrics_row)
+                    rows.append(row)
+                except Exception as e:
+                    logging.warning(f"Skipping {tree.filename()} due to exception ({e})")
     return pd.DataFrame.from_records(rows)
 
 

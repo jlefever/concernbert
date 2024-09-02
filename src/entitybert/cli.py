@@ -110,15 +110,8 @@ def train(config_file: str) -> None:
 def report_metrics(input: str, output: str, model: str, cache: str, batch_size):
     logging.debug("report_metrics called")
     files_df = pd.read_csv(input)
-    with pd.ExcelWriter(output) as writer:
-        logging.info(f"Calculating metrics for {len(files_df)} files...")
-        metrics_df = metrics.calc_metrics_df(
-            files_df, model, cache, batch_size, pbar=True
-        )
-        metrics_df.to_excel(writer, sheet_name="Metrics", index=False)
-        logging.info("Calculating correlations...")
-        coef_df = metrics.calc_db_level_coefs(metrics_df)
-        coef_df.to_excel(writer, sheet_name="DB-level Correlations", index=False)
+    metrics_df = metrics.calc_metrics_df(files_df, model, cache, batch_size, pbar=True)
+    metrics_df.to_csv(output)
 
 
 @click.command()
