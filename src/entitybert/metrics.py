@@ -191,8 +191,9 @@ def calc_metrics_row(
     texts = [tree.entity_text(m.id) for m in subgraph.nodes]
     embeddings_dict = embedder.embed(texts, pbar=False)
     embeddings = np.array([embeddings_dict[t] for t in texts])
-    cdi = to_model_based_cohesion(embeddings)
-    row["CDI"] = cdi.mean_dist_to_centroid
+    centroid = to_centroid(embeddings)
+    centroid_residuals = cdist(embeddings, [centroid])
+    row["CDI"] = float(np.mean(centroid_residuals))
 
     # Canonical metrics
     canon = calc_canonical(subgraph)
