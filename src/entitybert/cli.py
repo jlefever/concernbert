@@ -111,7 +111,7 @@ def report_metrics(input: str, output: str, model: str, cache: str, batch_size):
     logging.debug("report_metrics called")
     files_df = pd.read_csv(input)
     metrics_df = metrics.calc_metrics_df(files_df, model, cache, batch_size, pbar=True)
-    metrics_df.to_csv(output)
+    metrics_df.to_csv(output, index=False)
 
 
 @click.command()

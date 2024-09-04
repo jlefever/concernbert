@@ -191,9 +191,7 @@ def calc_metrics_row(
     texts = [tree.entity_text(m.id) for m in subgraph.nodes]
     embeddings_dict = embedder.embed(texts, pbar=False)
     embeddings = np.array([embeddings_dict[t] for t in texts])
-    centroid = to_centroid(embeddings)
-    centroid_residuals = cdist(embeddings, [centroid])
-    row["CDI"] = float(np.mean(centroid_residuals))
+    row["CDI"] = to_aad(embeddings)
 
     # Canonical metrics
     canon = calc_canonical(subgraph)
@@ -232,11 +230,11 @@ def calc_metrics_row(
     bert_sim_mat = to_sim_mat(bert_embeddings)
 
     # AAD
-    for dim, sim_mat in lsi_sim_mats.items():
-        row[f"AAD(LSI-{dim})"] = to_aad(sim_mat)
-    for dim, sim_mat in d2v_sim_mats.items():
-        row[f"AAD(D2V-{dim})"] = to_aad(sim_mat)
-    row["AAD(BERT)"] = to_aad(bert_sim_mat)
+    for dim, emb in lsi_embeddings.items():
+        row[f"AAD(LSI-{dim})"] = to_aad(emb)
+    for dim, emb in d2v_embeddings.items():
+        row[f"AAD(D2V-{dim})"] = to_aad(emb)
+    row["AAD(BERT)"] = to_aad(bert_embeddings)
 
     # Negative C3
     for dim, sim_mat in lsi_sim_mats.items():
