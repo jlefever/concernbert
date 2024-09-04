@@ -206,6 +206,10 @@ def calc_metrics_row(
     row["LCC"] = canon.lcc
     row["LCOM5"] = canon.lcom5
 
+    # If there are no less than two methods, the remaining metrics are undefined.
+    if len(subgraph.nodes.methods()) < 2:
+        return row
+
     # LSI embeddings and similarity matrices (used by Marcus and Poshyvanyk)
     lsi_embeddings: dict[int, np.ndarray] = {}
     for dim, lsi in lsis.items():
