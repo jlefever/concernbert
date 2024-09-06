@@ -70,6 +70,12 @@ def to_aad(X: np.ndarray) -> float:
     return float(np.mean(centroid_residuals))
 
 
+def to_unbiased_aad(X: np.ndarray) -> float:
+    centroid = to_centroid(X)
+    centroid_residuals = cdist(X, [centroid])
+    return centroid_residuals.sum() / (len(centroid_residuals) - 1)
+
+
 def to_sim_mat(embeddings: np.ndarray, *, euclidean: bool = False) -> np.ndarray:
     if euclidean:
         dists = cdist(embeddings, embeddings, metric="euclidean")
@@ -191,7 +197,7 @@ def calc_metrics_row(
     texts = [tree.entity_text(m.id) for m in subgraph.nodes]
     embeddings_dict = embedder.embed(texts, pbar=False)
     embeddings = np.array([embeddings_dict[t] for t in texts])
-    row["CDI"] = to_aad(embeddings)
+    row["CDI"] = to_unbiased_aad(embeddings)
 
     # Canonical metrics
     canon = calc_canonical(subgraph)
@@ -231,10 +237,10 @@ def calc_metrics_row(
 
     # AAD
     for dim, emb in lsi_embeddings.items():
-        row[f"AAD(LSI-{dim})"] = to_aad(emb)
+        row[f"AAD(LSI-{dim})"] = to_unbiased_aad(emb)
     for dim, emb in d2v_embeddings.items():
-        row[f"AAD(D2V-{dim})"] = to_aad(emb)
-    row["AAD(BERT)"] = to_aad(bert_embeddings)
+        row[f"AAD(D2V-{dim})"] = to_unbiased_aad(emb)
+    row["AAD(BERT)"] = to_unbiased_aad(bert_embeddings)
 
     # Negative C3
     for dim, sim_mat in lsi_sim_mats.items():
