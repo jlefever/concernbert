@@ -23,9 +23,14 @@ from entitybert.semantic import MyBert, MyCorpus, MyDoc2Vec, MyLsi
 
 
 def normalize_vectors(X: np.ndarray) -> np.ndarray:
-    """Normalize each vector in X to have a unit length."""
+    """Normalize each vector in X to have a unit length, handle zero-norm vectors."""
     norms = np.linalg.norm(X, axis=1, keepdims=True)
+    
+    # Prevent division by zero by replacing zero norms with 1 (to avoid NaNs)
+    norms[norms == 0] = 1
+    
     return X / norms
+
 
 def to_centroid(X: np.ndarray) -> np.ndarray:
     """Calculate the centroid (mean vector) of X."""
