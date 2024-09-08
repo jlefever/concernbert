@@ -216,6 +216,7 @@ def calc_metrics_row(
     embeddings_dict = embedder.embed(texts, pbar=False)
     embeddings = np.array([embeddings_dict[t] for t in texts])
     row["CDI"] = to_aad(embeddings)
+    row["CDI_NC3"] = -1 * to_c3(to_acsm(to_sim_mat(embeddings)))
 
     # Canonical metrics
     canon = calc_canonical(subgraph)
