@@ -52,8 +52,6 @@ _JAVA_QUERY = _JAVA_LANGUAGE.query(
     (block_comment) @block_comment
     (identifier) @identifier
     (type_identifier) @type_identifier
-    (character_literal) @char_literal
-    (string_literal) @string_literal
 """
 )
 
@@ -83,10 +81,6 @@ class _CaptureKind(enum.Enum):
     IDENTIFIER = 11
     TYPE_IDENTIFIER = 12
 
-    # Text literals
-    CHAR_LITERAL = 13
-    STRING_LITERAL = 14
-
     def is_function(self) -> bool:
         return self == _CaptureKind.CONSTRUCTOR or self == _CaptureKind.METHOD
 
@@ -96,12 +90,9 @@ class _CaptureKind(enum.Enum):
     def is_identifier(self) -> bool:
         return self == _CaptureKind.IDENTIFIER or self == _CaptureKind.TYPE_IDENTIFIER
 
-    def is_text_literal(self) -> bool:
-        return self == _CaptureKind.CHAR_LITERAL or self == _CaptureKind.STRING_LITERAL
-
     def is_human_text(self) -> bool:
         "Is this text that does not contain Java keywords, operators, etc.?"
-        return self.is_comment() or self.is_identifier() or self.is_text_literal()
+        return self.is_comment() or self.is_identifier()
 
 
 @dataclass(frozen=True)
@@ -237,8 +228,8 @@ def _tokenize(text: str) -> list[str]:
 @dataclass
 class MethodDoc:
     method_text: str
-    preceding_comments: list[str]
-    tokens: list[str]
+    preceding_comments_tokens: list[str]
+    entity_tokens: list[str]
 
 
 def find_method_docs(content: str) -> list[MethodDoc]:
@@ -272,24 +263,30 @@ def find_method_docs(content: str) -> list[MethodDoc]:
             preceding_comments.reverse()
 
             # Collect tokens of preceding comments
-            tokens: list[str] = []
+            preceding_comments_tokens: list[str] = []
             for comment in preceding_comments:
-                tokens.extend(_tokenize(comment))
+                preceding_comments_tokens.extend(_tokenize(comment))
 
             # Collect tokens from descendant "human text"
+            entity_tokens: list[str] = []
             for desc in _find_descendants(children, member):
                 if captures[desc.id].kind.is_human_text():
-                    tokens.extend(_tokenize(desc.text.decode()))
+                    entity_tokens.extend(_tokenize(desc.text.decode()))
 
             # Create MethodDoc
             method_text = member.text.decode()
-            docs.append(MethodDoc(method_text, preceding_comments, tokens))
+            docs.append(MethodDoc(method_text, preceding_comments_tokens, entity_tokens))
     return docs
 
 
 class MyCorpus:
     def __init__(
-        self, name: str, cache_dir: str, files: Iterable[tuple[str, str]]
+        self,
+        name: str,
+        cache_dir: str,
+        files: Iterable[tuple[str, str]],
+        *,
+        preceding_comments: bool,
     ) -> None:
         self.name = name
         cache_path = Path(cache_dir, name, "corpus.pkl")
@@ -308,8 +305,28 @@ class MyCorpus:
             cache_path.parent.mkdir(parents=True, exist_ok=True)
             with cache_path.open("wb") as f:
                 pickle.dump((self._method_docs, self._files), f)
-        self.vocab = Dictionary(m.tokens for m in self._method_docs)
-        self.corpus = [self.vocab.doc2bow(m.tokens) for m in self._method_docs]
+        self.docs: list[list[str]] = []
+        self.preceding_comments = preceding_comments
+        for method_doc in self._method_docs:
+            tokens: list[str] = []
+            if preceding_comments:
+                tokens.extend(method_doc.preceding_comments_tokens)
+            tokens.extend(method_doc.entity_tokens)
+            self.docs.append(tokens)
+        self.vocab = Dictionary(self.docs)
+        self.corpus = [self.vocab.doc2bow(d) for d in self.docs]
+
+    def cache_key(self) -> str:
+        if self.preceding_comments:
+            return "C"
+        return "NC"
+
+    def get_tokens(self, method_doc: MethodDoc) -> list[str]:
+        tokens: list[str] = []
+        if self.preceding_comments:
+            tokens.extend(method_doc.preceding_comments_tokens)
+        tokens.extend(method_doc.entity_tokens)
+        return tokens
 
     def get_doc_indices(self, filename: str) -> list[int]:
         return self._files[filename]
@@ -318,13 +335,15 @@ class MyCorpus:
         return self._method_docs[index]
 
     def to_tagged_docs(self) -> list[TaggedDocument]:
-        return [TaggedDocument(m.tokens, [i]) for i, m in enumerate(self._method_docs)]
+        return [TaggedDocument(d, [i]) for i, d in enumerate(self.docs)]
 
 
 class MyLsi:
     def __init__(self, corpus: MyCorpus, dim: int, cache_dir: str):
         self._corpus = corpus
-        cache_path = Path(cache_dir, corpus.name, f"lsi-{dim}.model")
+        cache_path = Path(
+            cache_dir, corpus.name, f"lsi-{dim}-{corpus.cache_key()}.model"
+        )
         if cache_path.exists():
             self._lsi = LsiModel.load(str(cache_path))
             return
@@ -337,7 +356,7 @@ class MyLsi:
     def embed(self, filename: str) -> np.ndarray:
         vecs: list[np.ndarray] = []
         for doc_index in self._corpus.get_doc_indices(filename):
-            bow = self._to_bow(self._corpus.get_doc(doc_index).tokens)
+            bow = self._to_bow(self._corpus.get_tokens(self._corpus.get_doc(doc_index)))
             vecs.append(sparse2full(self._lsi[bow], length=self._lsi.num_topics))
         return np.array(vecs)
 
@@ -348,7 +367,9 @@ class MyLsi:
 class MyDoc2Vec:
     def __init__(self, corpus: MyCorpus, dim: int, cache_dir: str):
         self._corpus = corpus
-        cache_path = Path(cache_dir, corpus.name, f"d2v-{dim}.model")
+        cache_path = Path(
+            cache_dir, corpus.name, f"d2v-{dim}-{corpus.cache_key()}.model"
+        )
         if cache_path.exists():
             self._doc2vec: Doc2Vec = Doc2Vec.load(str(cache_path))  # type: ignore
             return
