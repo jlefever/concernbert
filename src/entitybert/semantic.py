@@ -375,7 +375,7 @@ class MyDoc2Vec:
             return
         docs = self._corpus.to_tagged_docs()
         self._doc2vec = Doc2Vec(
-            docs, vector_size=dim, epochs=50, min_count=1, workers=4, seed=42
+            docs, vector_size=dim, min_count=1, workers=4, seed=42
         )
         cache_path.parent.mkdir(parents=True, exist_ok=True)
         self._doc2vec.save(str(cache_path))
