@@ -321,23 +321,23 @@ def calc_metrics_df(
             # Throw out any very large files
             files_iter = ((f, t) for f, t in files_iter if len(t) <= 2_000_000)
             corpus_c = MyCorpus(str(db_path), cache_dir, files_iter, preceding_comments=True)
-            corpus_wc = MyCorpus(str(db_path), cache_dir, files_iter, preceding_comments=False)
+            corpus_nc = MyCorpus(str(db_path), cache_dir, files_iter, preceding_comments=False)
             dims: list[int] = [10, 64, 256, 768]
             lsis: dict[str, MyLsi] = {}
-            for dim, c in it.product(dims, ["C", "WC"]):
+            for dim, c in it.product(dims, ["C", "NC"]):
                 logging.info(f"Running LSI-{dim}-{c}...")
                 if c == "C":
                     lsis[f"{dim}-{c}"] = MyLsi(corpus_c, dim=dim, cache_dir=cache_dir)
-                elif c == "WC":
-                    lsis[f"{dim}-{c}"] = MyLsi(corpus_wc, dim=dim, cache_dir=cache_dir)
+                elif c == "NC":
+                    lsis[f"{dim}-{c}"] = MyLsi(corpus_nc, dim=dim, cache_dir=cache_dir)
             d2vs: dict[str, MyDoc2Vec] = {}
-            for dim, c in it.product(dims, ["C", "WC"]):
+            for dim, c in it.product(dims, ["C", "NC"]):
                 logging.info(f"Running D2V-{dim}-{c}...")
                 if c == "C":
                     d2vs[f"{dim}-{c}"] = MyDoc2Vec(corpus_c, dim=dim, cache_dir=cache_dir)
-                elif c == "WC":
-                    d2vs[f"{dim}-{c}"] = MyDoc2Vec(corpus_wc, dim=dim, cache_dir=cache_dir)
-            bert = MyBert(corpus_wc, embedder)
+                elif c == "NC":
+                    d2vs[f"{dim}-{c}"] = MyDoc2Vec(corpus_nc, dim=dim, cache_dir=cache_dir)
+            bert = MyBert(corpus_nc, embedder)
             for _, input_row in group_df.iterrows():
                 bar.update()
                 tree = trees[input_row["filename"]]  # type: ignore
