@@ -216,7 +216,6 @@ def calc_metrics_row(
     embeddings_dict = embedder.embed(texts, pbar=False)
     embeddings = np.array([embeddings_dict[t] for t in texts])
     row["CDI"] = to_aad(embeddings)
-    row["CDI_NC3"] = -1 * to_c3(to_acsm(to_sim_mat(embeddings)))
 
     # Canonical metrics
     canon = calc_canonical(subgraph)
@@ -256,9 +255,11 @@ def calc_metrics_row(
 
     # AAD
     for name, emb in lsi_embeddings.items():
-        row[f"AAD(LSI-{name})"] = to_aad(emb)
+        # We use unit_aad instead because LSI space typically doesn't use magnitude (usually cosine similarity)
+        row[f"AAD(LSI-{name})"] = to_unit_aad(emb)
     for name, emb in d2v_embeddings.items():
-        row[f"AAD(D2V-{name})"] = to_aad(emb)
+        # Same for Doc2Vec
+        row[f"AAD(D2V-{name})"] = to_unit_aad(emb)
     row["AAD(BERT)"] = to_aad(bert_embeddings)
 
     # Negative C3
