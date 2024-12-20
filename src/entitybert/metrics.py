@@ -81,12 +81,6 @@ def to_aad(X: np.ndarray) -> float:
     return float(np.mean(centroid_residuals))
 
 
-def to_unbiased_aad(X: np.ndarray) -> float:
-    centroid = to_centroid(X)
-    centroid_residuals = cdist(X, [centroid])
-    return centroid_residuals.sum() / (len(centroid_residuals) - 1)
-
-
 def to_unit_aad(X: np.ndarray) -> float:
     X_normalized = normalize_vectors(X)
     centroid = to_centroid(X_normalized)
@@ -283,23 +277,6 @@ def calc_metrics_row(
         row[f"LCOSM(D2V-{name})"] = to_lcosm(sim_mat, to_acsm(sim_mat))
     row["LCOSM(BERT)"] = to_lcosm(bert_sim_mat, to_acsm(bert_sim_mat))
 
-    # Model-based Semantic Cohesion
-    # texts = [tree.entity_text(m.id) for m in subgraph.nodes]
-    # embeddings_dict = embedder.embed(texts, pbar=False)
-    # embeddings = np.array([embeddings_dict[t] for t in texts])
-    # cdi = to_model_based_cohesion(embeddings)
-    # row["CDI_MEAN_CENT"] = cdi.mean_dist_to_centroid
-    # row["CDI_MED_CENT"] = cdi.median_dist_to_centroid
-    # row["CDI_STD_CENT"] = cdi.std_dist_to_centroid
-    # row["CDI_MEAN_GMED"] = cdi.mean_dist_to_geometric_median
-    # row["CDI_MED_GMED"] = cdi.median_dist_to_geometric_median
-    # row["CDI_STD_GMED"] = cdi.std_dist_to_geometric_median
-    # row["CDI_MEAN_MEDO"] = cdi.mean_dist_to_medoid
-    # row["CDI_MED_MEDO"] = cdi.median_dist_to_medoid
-    # row["CDI_STD_MEDO"] = cdi.std_dist_to_medoid
-    # row["CDI_MEAN_MMED"] = cdi.mean_dist_to_marginal_median
-    # row["CDI_MED_MMED"] = cdi.median_dist_to_marginal_median
-    # row["CDI_STD_MMED"] = cdi.std_dist_to_marginal_median
     return row
 
 
@@ -360,22 +337,3 @@ def calc_metrics_df(
                 except Exception as e:
                     logging.warning(f"Skipping {tree.filename()} due to exception ({e})")
     return pd.DataFrame.from_records(rows)
-
-
-def get_numeric_cols(df: pd.DataFrame) -> list[str]:
-    return [c for c, d in zip(df.columns, df.dtypes) if np.issubdtype(d, np.number)]
-
-
-def calc_db_level_coefs(metrics_df: pd.DataFrame) -> pd.DataFrame:
-    rows: list[dict[str, Any]] = []
-    for db, group_df in metrics_df.groupby("db_path"):
-        for a, b in it.combinations(get_numeric_cols(metrics_df), r=2):
-            x, y = list(group_df[a]), list(group_df[b])
-            tau = sp.stats.kendalltau(x, y, variant="c").statistic
-            row1 = {"db_path": db, "A": a, "B": b}
-            row1["Tau"] = tau
-            row2 = row1.copy()
-            row2["A"], row2["B"] = b, a
-            rows.extend([row1, row2])
-    res_df = pd.DataFrame.from_records(rows)
-    return res_df.sort_values(["db_path", "A", "B"])

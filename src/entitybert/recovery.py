@@ -36,14 +36,14 @@ def normalize_vectors(X: np.ndarray) -> np.ndarray:
 
 MODEL = "_models/EntityBERT-v3_train_nonldl-lr5e5-2_83-e3"
 CACHE_DIR = "_cache"
-OUTPUT_CSV = "recovery.csv"
-OUTPUT_STATE = "recovery_state.pkl"
+OUTPUT_CSV = "_data/recovery.csv"
+OUTPUT_STATE = "_data/recovery_state.pkl"
 MAX_PROJECTS = 500
 MAX_FILES_PER_PROJECT = 200
 BATCH_SIZE = 16
 NUM_KMEANS_RUNS = 4
 GROUP_SIZES = [2, 3, 4, 5]
-FILES_DF = pd.read_csv("_data/files_test.csv")
+FILES_DF = pd.read_csv("_data/files_test_part.csv")
 SEED = 42
 
 random.seed(SEED)
@@ -100,7 +100,7 @@ for db_path, group_df in FILES_DF.groupby("db_path"):
         edge_set = EntityEdgeSet.load_from_db(conn.cursor())
         logging.info(f"Collecting corpus for {db_path}...")
         files_iter = ((t.filename(), t.text()) for t in trees.values())
-        corpus = MyCorpus(str(db_path), CACHE_DIR, files_iter)
+        corpus = MyCorpus(str(db_path), CACHE_DIR, files_iter, preceding_comments=True)
         dims: list[int] = [10, 64, 256, 768]
         for dim in dims:
             logging.info(f"Running LSI-{dim}...")
