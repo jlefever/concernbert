@@ -20,8 +20,8 @@ from tree_sitter import Node
 
 from entitybert.embeddings import Embedder
 
-nltk.download("stopwords")
-nltk.download("punkt")
+nltk.download("stopwords", quiet=True)
+nltk.download("punkt", quiet=True)
 logging.getLogger("gensim").setLevel(logging.ERROR)
 
 _STOP_WORDS = set(stopwords.words("english"))
@@ -81,8 +81,14 @@ class _CaptureKind(enum.Enum):
     IDENTIFIER = 11
     TYPE_IDENTIFIER = 12
 
+    def is_field(self) -> bool:
+        return self == _CaptureKind.FIELD
+
     def is_function(self) -> bool:
         return self == _CaptureKind.CONSTRUCTOR or self == _CaptureKind.METHOD
+
+    def is_entity(self) -> bool:
+        return self.is_field() or self.is_function()
 
     def is_comment(self) -> bool:
         return self == _CaptureKind.LINE_COMMENT or self == _CaptureKind.BLOCK_COMMENT
@@ -128,6 +134,7 @@ def _determine_lineage(node_a: Node, node_b: Node) -> tuple[Node, Node] | None:
     return None
 
 
+# Very slow!
 def _calculate_parents_dict(nodes: list[Node]) -> dict[Node, Node | None]:
     """Given a list of nodes, return a child-to-parent mapping."""
     parents: dict[Node, Node | None] = {n: None for n in nodes}
@@ -277,6 +284,37 @@ def find_method_docs(content: str) -> list[MethodDoc]:
             method_text = member.text.decode()
             docs.append(MethodDoc(method_text, preceding_comments_tokens, entity_tokens))
     return docs
+
+
+def find_entity_docs(content: str) -> dict[str, list[str]]:
+    content_bytes = content.encode()
+    captures = _find_captures(content_bytes)
+    nodes = [c.node for c in captures.values()]
+    parents = _calculate_parents_dict(nodes)
+    children = _to_children_dict(parents)
+
+    # A "top" is a node that contains at least one entity
+    tops = {parents[n] for n in nodes if captures[n.id].kind.is_entity()}
+
+    # Build a document for each method in the source code
+    docs_by_top: dict[str, list[str]] = dict()
+    for top in tops:
+        if top is None:
+            name = "(-1, -1)"
+        else:
+            row, col = top.start_point
+            name = f"({row}, {col})"
+        members = children[top]
+        if len(members) < 2:
+            continue
+        members.sort(key=lambda m: m.byte_range)
+        docs: list[str] = []
+        for member in members:
+            capture = captures[member.id]
+            if capture.kind.is_entity():
+                docs.append(member.text.decode())
+        docs_by_top[name] = docs
+    return docs_by_top
 
 
 class MyCorpus:

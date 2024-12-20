@@ -1,9 +1,11 @@
 import logging
+import json
+from dataclasses import asdict
 from io import IOBase, TextIOBase
 
 import click
 import pandas as pd
-from entitybert import fileranking, metrics, selection, training
+from entitybert import fileranking, metrics, selection, training, frontend
 from entitybert.embeddings import load_caching_embedder
 from sentence_transformers import SentenceTransformer
 
@@ -161,6 +163,18 @@ def extract_files_from_seq(
     files_df.to_csv(output, index=False)  # type: ignore
 
 
+@click.command()
+@click.argument("INPUT", type=click.File("r"))
+@click.option("--model", type=click.Path(exists=True))
+@click.option("--cache", type=click.Path())
+@click.option("--batch-size", default=24, type=click.INT)
+def calculate_cd(input: TextIOBase, model: str, cache: str, batch_size: int):
+    calculator = frontend.CdCalculator(model, cache, batch_size)
+    text = input.read()
+    result = calculator.calc_cd(text, pbar=True)
+    print(json.dumps(asdict(result), indent=4))
+    
+
 cli.add_command(split)
 cli.add_command(extract_files)
 cli.add_command(extract_entities)
@@ -168,3 +182,4 @@ cli.add_command(train)
 cli.add_command(report_metrics)
 cli.add_command(export_file_ranker)
 cli.add_command(extract_files_from_seq)
+cli.add_command(calculate_cd)

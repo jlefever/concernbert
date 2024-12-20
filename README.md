@@ -10,7 +10,7 @@ This project is managed with [Rye](https://github.com/astral-sh/rye).
 
 ```bash
 rye sync # only needs to be run once
-.venv/bin/activate
+source .venv/bin/activate
 python -m entitybert --help
 ```
 
