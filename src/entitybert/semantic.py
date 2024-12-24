@@ -305,15 +305,14 @@ def find_entity_docs(content: str) -> dict[str, list[str]]:
             row, col = top.start_point
             name = f"({row}, {col})"
         members = children[top]
-        if len(members) < 2:
-            continue
         members.sort(key=lambda m: m.byte_range)
         docs: list[str] = []
         for member in members:
             capture = captures[member.id]
             if capture.kind.is_entity():
                 docs.append(member.text.decode())
-        docs_by_top[name] = docs
+        if len(docs) > 1:
+            docs_by_top[name] = docs
     return docs_by_top
 
 
