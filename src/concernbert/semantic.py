@@ -9,7 +9,7 @@ from typing import Iterable
 
 import nltk
 import numpy as np
-import tree_sitter_languages
+from tree_sitter_languages import get_language, get_parser
 from gensim.corpora import Dictionary
 from gensim.matutils import sparse2full
 from gensim.models.doc2vec import Doc2Vec, TaggedDocument
@@ -18,7 +18,7 @@ from nltk.corpus import stopwords
 from nltk.stem.porter import PorterStemmer
 from tree_sitter import Node
 
-from entitybert.embeddings import Embedder
+from concernbert.embeddings import Embedder
 
 nltk.download("stopwords", quiet=True)
 nltk.download("punkt", quiet=True)
@@ -27,8 +27,8 @@ logging.getLogger("gensim").setLevel(logging.ERROR)
 _STOP_WORDS = set(stopwords.words("english"))
 _STEMMER = PorterStemmer()
 
-_JAVA_LANGUAGE = tree_sitter_languages.get_language("java")
-_JAVA_PARSER = tree_sitter_languages.get_parser("java")
+_JAVA_LANGUAGE = get_language("java")
+_JAVA_PARSER = get_parser("java")
 _JAVA_QUERY = _JAVA_LANGUAGE.query(
     """
     (class_declaration

@@ -1,0 +1,11 @@
+1. More recent cohesion measures (2020 semantic cohesion, YALCOM)
+2. Statistical stuff for determining sample size / effect size / etc.
+3. Look at examples where our approach doesn't work
+4. Start writing approach/method
+
+5. Look at cases where MSC is low percentile (but LDL)
+6. Something better to say than "50% accuracy"
+
+7. Fix slack notifications
+
+Thursday, 10:00

@@ -1,4 +1,4 @@
-# python generated files
+# Python-generated files
 __pycache__/
 *.py[oc]
 build/
@@ -6,18 +6,15 @@ dist/
 wheels/
 *.egg-info
 
-# other
+# Virtual environments
 .venv
-.DS_Store
-.data*
-.models*
-old/
-_data*
-_models*
-_fileranker*
-_embeddings*
-_papers*
-_notes*
-_cache*
 
-entitybert.log
+# Common development directories
+_cache/
+_data/
+_examples/
+_fileranker/
+_models/
+
+# MacOS
+.DS_Store

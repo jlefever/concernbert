@@ -10,8 +10,8 @@ from ordered_set import OrderedSet as oset
 from scipy.spatial.distance import cdist, euclidean
 from tqdm import tqdm
 
-from entitybert.embeddings import Embedder, load_caching_embedder
-from entitybert.selection import (
+from concernbert.embeddings import Embedder, load_caching_embedder
+from concernbert.selection import (
     EntityEdgeSet,
     EntityGraph,
     EntityNodeSet,
@@ -19,7 +19,7 @@ from entitybert.selection import (
     calc_canonical,
     open_db,
 )
-from entitybert.semantic import MyBert, MyCorpus, MyDoc2Vec, MyLsi
+from concernbert.semantic import MyBert, MyCorpus, MyDoc2Vec, MyLsi
 
 
 def normalize_vectors(X: np.ndarray) -> np.ndarray:

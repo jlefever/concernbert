@@ -3,7 +3,7 @@ from collections import defaultdict
 from typing import Iterator
 
 import pandas as pd
-from entitybert import selection
+from concernbert import selection
 
 
 class _ItemLookup[T]:

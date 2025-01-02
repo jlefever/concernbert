@@ -5,8 +5,8 @@ from io import IOBase, TextIOBase
 
 import click
 import pandas as pd
-from entitybert import fileranking, metrics, selection, training, frontend
-from entitybert.embeddings import load_caching_embedder
+from concernbert import fileranking, metrics, selection, training, frontend
+from concernbert.embeddings import load_caching_embedder
 from sentence_transformers import SentenceTransformer
 
 

@@ -10,13 +10,13 @@ from sklearn.cluster import KMeans
 from sklearn.metrics.cluster import normalized_mutual_info_score
 from tqdm import tqdm
 
-from entitybert.embeddings import load_caching_embedder
-from entitybert.selection import (
+from concernbert.embeddings import load_caching_embedder
+from concernbert.selection import (
     EntityEdgeSet,
     EntityTree,
     open_db,
 )
-from entitybert.semantic import MyBert, MyCorpus, MyDoc2Vec, MyLsi
+from concernbert.semantic import MyBert, MyCorpus, MyDoc2Vec, MyLsi
 
 
 def to_combinations(items: list[str], group_size: int) -> list[list[str]]:

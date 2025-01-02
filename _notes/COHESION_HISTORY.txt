@@ -1,0 +1,30 @@
+People:
+Shyam R. Chidamber: https://dl.acm.org/profile/81100361680
+Chris F. Kemerer: https://dl.acm.org/profile/81100079220
+Lionel C. Briand: https://dl.acm.org/profile/81100225227
+Martin Hitz: https://dl.acm.org/profile/81100240606
+
+
+Papers:
+
+[SMC_1974] Wayne P. Stevens, Glenford J. Myers, and Larry L. Constantine. Structured design. https://dl.acm.org/doi/10.1147/sj.132.0115. https://ieeexplore.ieee.org/document/5388187.
+
+[CK_1991] Shyam R. Chidamber, and Chris F. Kemerer. 1991. Towards a metrics suite for object oriented design. https://dl.acm.org/doi/10.1145/117954.117970.
+
+[CK_1994]  Shyam R. Chidamber, and Chris F. Kemerer. 1994. A Metrics Suite for Object-Oriented Design. https://dl.acm.org/doi/10.1109/32.295895. https://ieeexplore.ieee.org/document/295895.
+
+[HM_1995] Martin Hitz, and Behzad Montazeri. 1995. Measuring Coupling and Cohesion In Object-Oriented Systems. http://www.isys.uni-klu.ac.at/PDF/1995-0043-MHBM.pdf.
+
+[BDW_1997] Lionel C. Briand, John W. Daly, and Jürgen Wüst. 1997. A Unified Framework for Cohesion Measurement in Object-Oriented Systems. https://ieeexplore.ieee.org/abstract/document/637164.
+
+[BDW_1998] Lionel C. Briand, John W. Daly, and Jürgen Wüst. 1998. A Unified Framework for Cohesion Measurement in Object-Oriented Systems. https://link.springer.com/article/10.1023/A:1009783721306.
+
+[BDW_1999] Lionel C. Briand, John W. Daly, and Jürgen Wüst. 1999. A Unified Framework for Coupling Measurement in Object-Oriented Systems. https://dl.acm.org/doi/10.1109/32.748920. https://ieeexplore.ieee.org/abstract/document/748920.
+
+
+
+
+
+
+The term "LCOM" is first used in [CK_1994]. Later, [BDW_1998] give it the name "LCOM1" which seems to be the first usage of "LCOM1".
+

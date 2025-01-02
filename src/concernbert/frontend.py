@@ -3,9 +3,9 @@ import itertools as it
 
 import numpy as np
 
-from entitybert.semantic import find_entity_docs
-from entitybert.embeddings import load_caching_embedder
-from entitybert.metrics import to_aad
+from concernbert.semantic import find_entity_docs
+from concernbert.embeddings import load_caching_embedder
+from concernbert.metrics import to_aad
 
 
 @dataclass

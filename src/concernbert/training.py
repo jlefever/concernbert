@@ -12,8 +12,8 @@ from statistics import mean
 
 import numpy as np
 import pandas as pd
-from entitybert.embeddings import RawEmbedder
-from entitybert.sampling import MyDataset, SamplerArgs
+from concernbert.embeddings import RawEmbedder
+from concernbert.sampling import MyDataset, SamplerArgs
 from sentence_transformers import SentenceTransformer, losses  # type: ignore
 from sentence_transformers.evaluation import SentenceEvaluator  # type: ignore
 from sklearn.cluster import KMeans

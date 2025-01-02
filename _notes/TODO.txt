@@ -1,0 +1,47 @@
+[ ] 1. Improve explanation of why CD does better than C3 in Table 2
+[*] 2. Regenerate histograms.
+[*] 3. Update Figure 1 and reference it.
+[*] 4. Fill in a few placeholder numbers (size of NMI experiment).
+[*] 5. Update Table 3 to match Table 2.
+[*] 6. Somewhere mention that we use the larger version of LSI and Doc2Vec (768 dim) in Eval Part 2 and 3.
+[*] 7. Clarify COCC = C3
+[*] 8. Mention majority, no conflict, etc.
+[*] 9. Clarify "undefined metrics" issue
+[ ] 10. Clarify C3 vs NC3
+[*] 11. Clarify COCC vs C3 for Table 4
+[*] 12. Mention 768 for Part 2 and Part 3
+
+[*] 13. Update file / project counts
+
+===========
+
+Canonical Structural Metrics:
+LCOM1
+LCOM2
+LCOM3
+LCOM4
+Co
+TCC
+LCC
+LCOM5
+
+"Brand Name" Conceptual Metrics:
+CDI: CD
+NC3(LSI-768-C): C3 (LSI)
+NC3(D2V-768-C): C3 (D2V)
+LCSM(LSI-768-C): LCSM (LSI)
+LCOSM(D2V-768-C): LCOSM (D2V)
+
+"Hybrid" Conceptual Metrics:
+AAD(LSI-768-NC): CD (LSI)
+AAD(D2V-768-NC): CD (D2V)
+AAD(BERT): CD (ConcernBERT)
+NC3(LSI-768-NC): C3 (LSI)
+NC3(D2V-768-NC): C3 (D2V)
+NC3(BERT): C3 (ConcernBERT)
+LCSM(LSI-768-NC): LCSM (LSI)
+LCSM(D2V-768-NC): LCSM (D2V)
+LCSM(BERT): LCSM + ConcernBERT)
+LCOSM(LSI-768-NC): LCOSM (LSI)
+LCOSM(D2V-768-NC): LCOSM (D2V)
+LCOSM(BERT): LCOSM (ConcernBERT)

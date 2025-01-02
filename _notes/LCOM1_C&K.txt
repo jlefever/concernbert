@@ -1,0 +1,51 @@
+This example is on page 488 under the "Metric 6: Lack of Cohesion in Methods (LCOM)" header.
+
+Their notation is ambiguous. So we work backwards from their example.
+
+I1 = {a,b,c,d,e}
+I2 = {a,b,e}
+I3 = {x,y,z}
+
+Ordered Pairs:
+(I1, I1) = Overlap
+(I1, I2) = Overlap
+(I1, I3) = No Overlap
+
+(I2, I1) = Overlap
+(I2, I2) = Overlap
+(I2, I3) = No Overlap
+
+(I3, I1) = No Overlap
+(I3, I2) = No Overlap
+(I3, I3) = Overlap
+
+Unordered Pairs:
+{I1, I1} = Overlap
+{I1, I2} = Overlap
+{I1, I3} = No Overlap
+
+{I2, I2} = Overlap
+{I2, I3} = No Overlap
+
+{I3, I3} = Overlap
+
+
+With loops and ordered pairs:
+P = 4
+Q = 6
+LCOM = max(0, P - Q) = max(0, 4 - 6) = 0
+
+With no loops and ordered pairs:
+P = 4
+Q = 2
+LCOM = max(0, P - Q) = max(0, 4 - 2) = 2
+
+With loops and unordered pairs:
+P = 2
+Q = 4
+LCOM = max(0, P - Q) = max(0, 2 - 4) = 0
+
+With no loops and unordered pairs:
+P = 2
+Q = 1
+LCOM = max(0, P - Q) = max(0, 2 - 1) = 1

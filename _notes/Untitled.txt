@@ -1,0 +1,30 @@
+LCOM1
+LCOM2
+LCOM3
+LCOM4
+Co
+TCC
+LCC
+LCOM5
+
+
+LCOM1:
+Graph where nodes are methods. Undirected edge iff the two methods share at least one attribute.
+
+LCOM2:
+Same graph as LCOM1.
+
+LCOM3:
+Same graph as LCOM1.
+
+LCOM4:
+Like the graph in LCOM1, but also includes an edge if m1 directly calls m2 or vice versa.
+
+Co:
+Same graph as LCOM4.
+
+TCC:
+Graph where nodes are *public* methods, excluding constructors. Undirected edge if the two methods directly or indirectly use a common attribute.
+
+LCC:
+Transitive closure of the graph in TCC.
