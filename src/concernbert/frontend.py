@@ -13,6 +13,7 @@ class CdResult:
     inter_cd: float
     intra_cd: float
     groups: dict[str, float]
+    num_entities: int
 
 
 class CdCalculator:
@@ -29,4 +30,4 @@ class CdCalculator:
             groups[group_name] = to_aad(np.array(group_embeddings))
         inter_cd = float(np.mean(list(groups.values())))
         intra_cd = to_aad(np.array(list(embeddings.values())))
-        return CdResult(inter_cd, intra_cd, groups)
+        return CdResult(inter_cd, intra_cd, groups, len(texts))
