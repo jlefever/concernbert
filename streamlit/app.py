@@ -138,6 +138,7 @@ def plot_embeddings(seed, embeddings, names, true_dist=False):
 cd_calculator = CdCalculator("_models/EntityBERT-v3_train_nonldl-lr5e5-2_83-e3/", "_cache/")
 
 # st.set_page_config(layout="wide")
+st.set_page_config(page_title="ConcernBERT", page_icon=":technologist:")
 st.title("ConcernBERT")
 
 st.markdown(
@@ -225,6 +226,16 @@ if len(groups) == 0:
     st.warning("No entities found in source")
     st.stop()
 
+st.markdown("""
+    Below are the \"groups\" found in this Java file. Each group is 
+    contains methods and attributes that are share the same parent. For
+    instance, the members of a nested class will be in a separate group
+    than the members of a top-level class.
+            
+    CD is calculated for each group. A member can be unchecked to be excluded
+    from the CD calculation.
+""")
+
 dfs = to_dfs(groups)
 multi_group = len(groups) > 1
 
@@ -242,6 +253,14 @@ for i, tab in enumerate(tabs):
         edited_groups.append(edited_group)
         cd_result = cd_calculator.calc_cd_from_docs([edited_group])
         st.markdown(f"**CD of Group {i + 1}:** {cd_result.groups[0]:.4f} (Greater than ≈{ep(cd_result.groups[0]):.2f}%)")
+        st.markdown("""
+            Below is a 2D projection of these entities from the original 768D \"concern space.\" This
+            projection is down using [MDS](https://en.wikipedia.org/wiki/Multidimensional_scaling) which attempts to
+            preserve the pairwise distance between elements.
+            The displayed mean and concern deviation are computed in this 2D space, not the original, so they
+            will differ slightly than the CD reported above which is calculated in the original space.
+                    
+            MDS is not deterministic. It uses a seed to produce the final 2D projection.""")
         seed = st.number_input("Seed", key=f"seed-{i}", value=42, min_value=0)
         # true_dist = st.checkbox("True Distances", key=f"true-dist-{i}")
         names = [d.name for d in edited_group]
@@ -256,5 +275,8 @@ if multi_group:
 else:
     st.markdown(f"**CD:** {cd_result.inter_cd:.4f} (Greater than ≈{ep(cd_result.inter_cd):.2f}%)")
 
+st.markdown("""
+    Below is a plot of the approximate probability density function of CD scores. The percentile rank is calculated
+    using this distribution.""")
 
 plot_pdf(highlight_values=cd_result.groups)
