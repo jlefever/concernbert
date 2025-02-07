@@ -2,7 +2,6 @@ import enum
 import itertools as it
 import logging
 import pickle
-from collections import defaultdict
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Iterable
@@ -32,22 +31,22 @@ _JAVA_PARSER = get_parser("java")
 _JAVA_QUERY = _JAVA_LANGUAGE.query(
     """
     (class_declaration
-        name: (identifier) @identifier) @class
+        name: (identifier) @name) @class
     (record_declaration
-        name: (identifier) @identifier) @record
+        name: (identifier) @name) @record
     (enum_declaration
-        name: (identifier) @identifier) @enum
+        name: (identifier) @name) @enum
     (interface_declaration
-        name: (identifier) @identifier) @interface
+        name: (identifier) @name) @interface
     (annotation_type_declaration
-        name: (identifier) @identifier) @annotation
+        name: (identifier) @name) @annotation
     (method_declaration
-        name: (identifier) @identifier) @method
+        name: (identifier) @name) @method
     (constructor_declaration
-        name: (identifier) @identifier) @constructor
+        name: (identifier) @name) @constructor
     (field_declaration
         declarator: (variable_declarator
-            name: (identifier) @identifier)) @field
+            name: (identifier) @name)) @field
     (line_comment) @line_comment
     (block_comment) @block_comment
     (identifier) @identifier
@@ -78,8 +77,12 @@ class _CaptureKind(enum.Enum):
     BLOCK_COMMENT = 10
 
     # Identifiers
-    IDENTIFIER = 11
-    TYPE_IDENTIFIER = 12
+    NAME = 11
+    IDENTIFIER = 12
+    TYPE_IDENTIFIER = 13
+
+    def is_name(self) -> bool:
+        return self == _CaptureKind.NAME
 
     def is_field(self) -> bool:
         return self == _CaptureKind.FIELD
@@ -94,7 +97,11 @@ class _CaptureKind(enum.Enum):
         return self == _CaptureKind.LINE_COMMENT or self == _CaptureKind.BLOCK_COMMENT
 
     def is_identifier(self) -> bool:
-        return self == _CaptureKind.IDENTIFIER or self == _CaptureKind.TYPE_IDENTIFIER
+        return (
+            self == _CaptureKind.NAME
+            or self == _CaptureKind.IDENTIFIER
+            or self == _CaptureKind.TYPE_IDENTIFIER
+        )
 
     def is_human_text(self) -> bool:
         "Is this text that does not contain Java keywords, operators, etc.?"
@@ -107,50 +114,19 @@ class _Capture:
     kind: _CaptureKind
 
 
-def _determine_lineage(node_a: Node, node_b: Node) -> tuple[Node, Node] | None:
-    """
-    Calculate the ancestor-descendant relationship between two nodes.
-
-    Returns the tuple (ancestor, descendant). If the two nodes do not have
-    a strict ancestor-descendant relationship, then None is returned.
-    """
-    a0, a1 = node_a.byte_range
-    b0, b1 = node_b.byte_range
-    # Check if completely overlapping
-    if a0 == b0 and a1 == b1:
-        # TODO: Throw exception instead?
-        return None
-    # Check if there is no overlap
-    if a1 <= b0 or b1 <= a0:
-        return None
-    # Check if a completely surrounds b
-    if a0 <= b0 and b1 <= a1:
-        return node_a, node_b
-    # Check if b completely surrounds a
-    if b0 <= a0 and a1 <= b1:
-        return node_b, node_a
-    # There is some amount of overlap but no clear hierarchy
-    # TODO: Throw exception instead?
-    return None
+def _iter_ancestors(node: Node) -> Iterable[Node]:
+    curr: Node | None = node.parent
+    while curr is not None:
+        yield curr
+        curr = curr.parent
 
 
-# Very slow!
-def _calculate_parents_dict(nodes: list[Node]) -> dict[Node, Node | None]:
+def _to_parents_dict(nodes: list[Node]) -> dict[Node, Node | None]:
     """Given a list of nodes, return a child-to-parent mapping."""
-    parents: dict[Node, Node | None] = {n: None for n in nodes}
-    for node_a, node_b in it.combinations(nodes, 2):
-        if (lineage := _determine_lineage(node_a, node_b)) is None:
-            continue
-        ancestor, descendant = lineage
-        current_parent = parents.get(descendant, None)
-        if current_parent is None:
-            parents[descendant] = ancestor
-            continue
-        if (lineage := _determine_lineage(current_parent, ancestor)) is None:
-            raise RuntimeError(
-                "Two nodes with a common descendent have a non-overlapping byte range"
-            )
-        parents[descendant] = lineage[1]
+    parents: dict[Node, Node | None] = dict()
+    ids: set[int] = set(n.id for n in nodes)
+    for node in nodes:
+        parents[node] = next((a for a in _iter_ancestors(node) if a.id in ids), None)
     return parents
 
 
@@ -158,13 +134,31 @@ def _to_children_dict(
     parents: dict[Node, Node | None],
 ) -> dict[Node | None, list[Node]]:
     """Return a parent-to-children mapping given a child-to-parent mapping."""
-    children: dict[Node | None, list[Node]] = defaultdict(list)
+    children: dict[Node | None, list[Node]] = {None: []}
+    for node in parents:
+        children[node] = []
     for child, parent in parents.items():
         children[parent].append(child)
-    return dict(children)
+    for lst in children.values():
+        lst.sort(key=lambda n: n.byte_range)
+    return children
 
 
-def _find_descendants(
+def _to_names_dict(
+    captures: dict[int, _Capture], children: dict[Node | None, list[Node]]
+) -> dict[Node, str]:
+    names: dict[Node, str] = dict()
+    for capture in captures.values():
+        nodes = children[capture.node]
+        try:
+            name = next(n for n in nodes if captures[n.id].kind.is_name())
+            names[capture.node] = name.text.decode()
+        except StopIteration:
+            continue
+    return names
+
+
+def _iter_descendants(
     children: dict[Node | None, list[Node]], parent: Node | None
 ) -> Iterable[Node]:
     descendants: list[Node] = children.get(parent, [])
@@ -178,10 +172,13 @@ def _find_descendants(
 
 
 def _find_captures(content_bytes: bytes) -> dict[int, _Capture]:
-    captures: dict[int, _Capture] = {}
+    captures: dict[int, _Capture] = dict()
     tree = _JAVA_PARSER.parse(content_bytes)
     for node, capture_name in _JAVA_QUERY.captures(tree.root_node):
-        captures[node.id] = _Capture(node, _CaptureKind[capture_name.upper()])
+        capture = _Capture(node, _CaptureKind[capture_name.upper()])
+        if (c := captures.get(node.id)) and c.kind.value < capture.kind.value:
+            continue
+        captures[node.id] = capture
     return captures
 
 
@@ -244,7 +241,7 @@ def find_method_docs(content: str) -> list[MethodDoc]:
     content_bytes = content.encode()
     captures = _find_captures(content_bytes)
     nodes = [c.node for c in captures.values()]
-    parents = _calculate_parents_dict(nodes)
+    parents = _to_parents_dict(nodes)
     children = _to_children_dict(parents)
 
     # A "top" is a node that contains at least one function
@@ -276,43 +273,56 @@ def find_method_docs(content: str) -> list[MethodDoc]:
 
             # Collect tokens from descendant "human text"
             entity_tokens: list[str] = []
-            for desc in _find_descendants(children, member):
+            for desc in _iter_descendants(children, member):
                 if captures[desc.id].kind.is_human_text():
                     entity_tokens.extend(_tokenize(desc.text.decode()))
 
             # Create MethodDoc
             method_text = member.text.decode()
-            docs.append(MethodDoc(method_text, preceding_comments_tokens, entity_tokens))
+            docs.append(
+                MethodDoc(method_text, preceding_comments_tokens, entity_tokens)
+            )
     return docs
 
 
-def find_entity_docs(content: str) -> dict[str, list[str]]:
+@dataclass
+class EntityDoc:
+    name: str
+    kind: str
+    lineno: int
+    text: str
+
+
+def find_entity_docs(content: str) -> list[list[EntityDoc]]:
     content_bytes = content.encode()
     captures = _find_captures(content_bytes)
     nodes = [c.node for c in captures.values()]
-    parents = _calculate_parents_dict(nodes)
+    parents = _to_parents_dict(nodes)
     children = _to_children_dict(parents)
+    names = _to_names_dict(captures, children)
 
     # A "top" is a node that contains at least one entity
-    tops = {parents[n] for n in nodes if captures[n.id].kind.is_entity()}
+    tops = [parents[n] for n in nodes if captures[n.id].kind.is_entity()]
+    tops = [t for t in set(tops) if t is not None]
+    tops.sort(key=lambda t: t.byte_range)
 
     # Build a document for each method in the source code
-    docs_by_top: dict[str, list[str]] = dict()
+    docs_by_top: list[list[EntityDoc]] = list()
     for top in tops:
-        if top is None:
-            name = "(-1, -1)"
-        else:
-            row, col = top.start_point
-            name = f"({row}, {col})"
-        members = children[top]
-        members.sort(key=lambda m: m.byte_range)
-        docs: list[str] = []
-        for member in members:
+        docs: list[EntityDoc] = []
+        for member in children[top]:
+            if member.is_missing or member.has_error:
+                continue
             capture = captures[member.id]
-            if capture.kind.is_entity():
-                docs.append(member.text.decode())
+            if not capture.kind.is_entity():
+                continue
+            name = names[member]
+            kind = capture.kind.name
+            lineno = member.range.start_point[0] + 1
+            text = member.text.decode()
+            docs.append(EntityDoc(name, kind, lineno, text))
         if len(docs) > 1:
-            docs_by_top[name] = docs
+            docs_by_top.append(docs)
     return docs_by_top
 
 
