@@ -1,6 +1,6 @@
 [project]
 name = "concernbert"
-version = "0.0.4"
+version = "0.0.5"
 description = "Source code embeddings from finetuned BERT-based models"
 readme = "README.md"
 authors = [

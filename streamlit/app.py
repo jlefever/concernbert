@@ -271,7 +271,8 @@ st.divider()
 cd_result = cd_calculator.calc_cd_from_docs(edited_groups)
 
 if multi_group:
-    st.markdown(f"**Average CD:** {cd_result.inter_cd:.4f} (Greater than ≈{ep(cd_result.inter_cd):.2f}%)" , help="Calculate the CD of each group, then average.")
+    st.markdown(f"**Inter CD:** {cd_result.inter_cd:.4f} (Greater than ≈{ep(cd_result.inter_cd):.2f}%)" , help="Calculate the CD of each group, then average.")
+    st.markdown(f"**Intra CD:** {cd_result.intra_cd:.4f} (Greater than ≈{ep(cd_result.intra_cd):.2f}%)" , help="Calculate the CD, ignoring group distinctions.")
 else:
     st.markdown(f"**CD:** {cd_result.inter_cd:.4f} (Greater than ≈{ep(cd_result.inter_cd):.2f}%)")
 
