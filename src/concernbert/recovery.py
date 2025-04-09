@@ -34,15 +34,17 @@ def normalize_vectors(X: np.ndarray) -> np.ndarray:
     return X / norms
 
 
-MODEL = "_models/EntityBERT-v3_train_nonldl-lr5e5-2_83-e3"
+MODEL_V0 = "_models/CodeBERTa-small-v1"
+MODEL_V3 = "_models/EntityBERT-v3_train_nonldl-lr5e5-2_83-e3"
+MODEL_V5 = "_models/EntityBERT-v5_train_nonldl-lr5e5-2_80-e3-C2"
 CACHE_DIR = "_cache"
-OUTPUT_CSV = "_data/recovery.csv"
-OUTPUT_STATE = "_data/recovery_state.pkl"
-MAX_PROJECTS = 500
-MAX_FILES_PER_PROJECT = 200
+OUTPUT_CSV = "_data/recovery2.csv"
+OUTPUT_STATE = "_data/recovery_state2.pkl"
+MAX_PROJECTS = 5
+MAX_FILES_PER_PROJECT = 100
 BATCH_SIZE = 16
 NUM_KMEANS_RUNS = 4
-GROUP_SIZES = [2, 3, 4, 5]
+GROUP_SIZES = [2, 3]
 FILES_DF = pd.read_csv("_data/files_test_part.csv")
 SEED = 42
 
@@ -85,11 +87,15 @@ FILES_DF = FILES_DF[FILES_DF["db_path"].isin(db_paths)]
 FILES_DF = FILES_DF[~FILES_DF["is_ldl"]]
 
 print("Training models...")
-embedder = load_caching_embedder(MODEL, CACHE_DIR, BATCH_SIZE)
+embedder_v0 = load_caching_embedder(MODEL_V0, CACHE_DIR, BATCH_SIZE)
+embedder_v3 = load_caching_embedder(MODEL_V3, CACHE_DIR, BATCH_SIZE)
+embedder_v5 = load_caching_embedder(MODEL_V5, CACHE_DIR, BATCH_SIZE)
 
 lsis: dict[str, dict[int, MyLsi]] = defaultdict(dict)
 d2vs: dict[str, dict[int, MyDoc2Vec]] = defaultdict(dict)
-berts: dict[str, MyBert] = dict()
+bert_v0s: dict[str, MyBert] = dict()
+bert_v3s: dict[str, MyBert] = dict()
+bert_v5s: dict[str, MyBert] = dict()
 filenames: dict[str, list[str]] = defaultdict(list)
 
 bar = tqdm(total=len(FILES_DF))
@@ -108,7 +114,9 @@ for db_path, group_df in FILES_DF.groupby("db_path"):
         for dim in dims:
             logging.info(f"Running D2V-{dim}...")
             d2vs[db_path][dim] = MyDoc2Vec(corpus, dim=dim, cache_dir=CACHE_DIR)
-        berts[db_path] = MyBert(corpus, embedder)
+        bert_v0s[db_path] = MyBert(corpus, embedder_v0)
+        bert_v3s[db_path] = MyBert(corpus, embedder_v3)
+        bert_v5s[db_path] = MyBert(corpus, embedder_v5)
         for _, input_row in group_df.iterrows():
             bar.update()
             tree = trees[input_row["filename"]]  # type: ignore
@@ -133,14 +141,16 @@ for db_path, names in filenames.items():
 print("Embedding...")
 lsi_embeddings: dict[str, dict[int, dict[str, np.ndarray]]] = dict()
 d2v_embeddings: dict[str, dict[int, dict[str, np.ndarray]]] = dict()
-bert_embeddings: dict[str, dict[str, np.ndarray]] = dict()
+bert_v0_embeddings: dict[str, dict[str, np.ndarray]] = dict()
+bert_v3_embeddings: dict[str, dict[str, np.ndarray]] = dict()
+bert_v5_embeddings: dict[str, dict[str, np.ndarray]] = dict()
 
 for db_path, names in filenames.items():
     print()
     print(db_path)
     lsi_embeddings[db_path] = dict()
     d2v_embeddings[db_path] = dict()
-    bert_embeddings[db_path] = dict()
+    bert_v3_embeddings[db_path] = dict()
     print("LSI")
     for dim, lsi in lsis[db_path].items():
         lsi_embeddings[db_path][dim] = dict()
@@ -151,10 +161,18 @@ for db_path, names in filenames.items():
         d2v_embeddings[db_path][dim] = dict()
         for name in names:
             d2v_embeddings[db_path][dim][name] = d2v.embed(name)
-    print("BERT")
+    print("BERT v0")
     print(len(names))
     for name in names:
-        bert_embeddings[db_path][name] = berts[db_path].embed(name)
+        bert_v0_embeddings[db_path][name] = bert_v0s[db_path].embed(name)
+    print("BERT v3")
+    print(len(names))
+    for name in names:
+        bert_v3_embeddings[db_path][name] = bert_v3s[db_path].embed(name)
+    print("BERT v5")
+    print(len(names))
+    for name in names:
+        bert_v5_embeddings[db_path][name] = bert_v5s[db_path].embed(name)
 
 
 print("Building tests...")
@@ -187,10 +205,30 @@ for i, (db_path, db_tests) in enumerate(tests.items()):
             for dim, emb_dict in d2v_embeddings[db_path].items():
                 nmi = run_split_test(emb_dict, group, normalize=True)
                 results.append([db_path, group_size, group_i, f"D2V-{dim}", nmi])
-            # BERT
-            emb_dict = bert_embeddings[db_path]
-            nmi = run_split_test(emb_dict, group, normalize=False)
-            results.append([db_path, group_size, group_i, "BERT", nmi])
+            
+            # BERT v0
+            emb_v0_dict = bert_v0_embeddings[db_path]
+            nmi = run_split_test(emb_v0_dict, group, normalize=False)
+            results.append([db_path, group_size, group_i, "BERT-v0", nmi])
+            # BERT v0 (normalized)
+            nmi = run_split_test(emb_v0_dict, group, normalize=True)
+            results.append([db_path, group_size, group_i, "BERT-v0-normalized", nmi])
+            
+            # BERT v3
+            emb_v3_dict = bert_v3_embeddings[db_path]
+            nmi = run_split_test(emb_v3_dict, group, normalize=False)
+            results.append([db_path, group_size, group_i, "BERT-v3", nmi])
+            # BERT v3 (normalized)
+            nmi = run_split_test(emb_v3_dict, group, normalize=True)
+            results.append([db_path, group_size, group_i, "BERT-v3-normalized", nmi])
+            
+            # BERT v5
+            emb_v5_dict = bert_v5_embeddings[db_path]
+            nmi = run_split_test(emb_v5_dict, group, normalize=False)
+            results.append([db_path, group_size, group_i, "BERT-v5", nmi])
+            # BERT v5 (normalized)
+            nmi = run_split_test(emb_v5_dict, group, normalize=True)
+            results.append([db_path, group_size, group_i, "BERT-v5-normalized", nmi])
 
 
 print("Collecting results...")
@@ -203,7 +241,9 @@ state = {
     "filenames": filenames,
     "lsi_embeddings": lsi_embeddings,
     "d2v_embeddings": d2v_embeddings,
-    "bert_embeddings": bert_embeddings,
+    "bert_v0_embeddings": bert_v0_embeddings,
+    "bert_v3_embeddings": bert_v3_embeddings,
+    "bert_v5_embeddings": bert_v5_embeddings,
 }
 with open(OUTPUT_STATE, "wb") as f:
     pickle.dump(state, f)
