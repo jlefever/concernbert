@@ -21,6 +21,7 @@ from concernbert.embeddings import Embedder
 
 nltk.download("stopwords", quiet=True)
 nltk.download("punkt", quiet=True)
+nltk.download("punkt_tab", quiet=True)
 logging.getLogger("gensim").setLevel(logging.ERROR)
 
 _STOP_WORDS = set(stopwords.words("english"))

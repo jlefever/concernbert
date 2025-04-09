@@ -150,7 +150,9 @@ for db_path, names in filenames.items():
     print(db_path)
     lsi_embeddings[db_path] = dict()
     d2v_embeddings[db_path] = dict()
+    bert_v0_embeddings[db_path] = dict()
     bert_v3_embeddings[db_path] = dict()
+    bert_v5_embeddings[db_path] = dict()
     print("LSI")
     for dim, lsi in lsis[db_path].items():
         lsi_embeddings[db_path][dim] = dict()
