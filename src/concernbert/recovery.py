@@ -8,6 +8,8 @@ import numpy as np
 import pandas as pd
 from sklearn.cluster import KMeans
 from sklearn.metrics.cluster import normalized_mutual_info_score
+from sklearn.cluster import SpectralClustering
+from sklearn.metrics.pairwise import cosine_similarity
 from tqdm import tqdm
 
 from concernbert.embeddings import load_caching_embedder
@@ -38,8 +40,8 @@ MODEL_V0 = "_models/CodeBERTa-small-v1"
 MODEL_V3 = "_models/EntityBERT-v3_train_nonldl-lr5e5-2_83-e3"
 MODEL_V5 = "_models/EntityBERT-v5_train_nonldl-lr5e5-2_80-e3-C2"
 CACHE_DIR = "_cache"
-OUTPUT_CSV = "_data/recovery2.csv"
-OUTPUT_STATE = "_data/recovery_state2.pkl"
+OUTPUT_CSV = "_data/recovery3.csv"
+OUTPUT_STATE = "_data/recovery_state3.pkl"
 MAX_PROJECTS = 5
 MAX_FILES_PER_PROJECT = 100
 BATCH_SIZE = 16
@@ -51,7 +53,7 @@ SEED = 42
 random.seed(SEED)
 np.random.seed(SEED)
 
-KMEANS_SEEDS = list(np.random.randint(2**32, size=NUM_KMEANS_RUNS))
+CLUSTERING_SEEDS = list(np.random.randint(2**32, size=NUM_KMEANS_RUNS))
 
 
 def run_split_test(emb_dict, group: list[str], *, normalize: bool) -> float:
@@ -66,7 +68,7 @@ def run_split_test(emb_dict, group: list[str], *, normalize: bool) -> float:
         mat = normalize_vectors(mat)
     try:
         nmis: list[float] = []
-        for seed in KMEANS_SEEDS:
+        for seed in CLUSTERING_SEEDS:
             kmeans = KMeans(n_clusters=len(group), random_state=seed)
             pred: list[int] = list(kmeans.fit(mat).labels_)
             nmi = normalized_mutual_info_score(pred, true)
@@ -74,6 +76,32 @@ def run_split_test(emb_dict, group: list[str], *, normalize: bool) -> float:
         return float(np.mean(nmis))
     except Exception as e:
         print(f"WARN: Exception encountered during eval: {e}")
+        return 0.0
+
+
+def run_split_test_spectral(emb_dict, group: list[str]) -> float:
+    embs: list[np.ndarray] = []
+    true: list[int] = []
+    for i, filename in enumerate(group):
+        emb = emb_dict[filename]
+        embs.extend(emb)
+        true.extend([i] * emb.shape[0])
+    mat = np.vstack(embs)
+    sim_matrix = cosine_similarity(mat)
+    try:
+        nmis: list[float] = []
+        for seed in CLUSTERING_SEEDS:
+            clustering = SpectralClustering(
+                n_clusters=len(group),
+                affinity='precomputed',
+                random_state=seed
+            )
+            pred: list[int] = list(clustering.fit_predict(sim_matrix))
+            nmi = normalized_mutual_info_score(pred, true)
+            nmis.append(float(nmi))
+        return float(np.mean(nmis))
+    except Exception as e:
+        print(f"WARN: Exception encountered during spectral eval: {e}")
         return 0.0
 
 
@@ -202,39 +230,49 @@ for i, (db_path, db_tests) in enumerate(tests.items()):
             # LSI
             for dim, emb_dict in lsi_embeddings[db_path].items():
                 nmi = run_split_test(emb_dict, group, normalize=True)
-                results.append([db_path, group_size, group_i, f"LSI-{dim}", nmi])
+                results.append([db_path, group_size, group_i, f"LSI-{dim}", "kmeans", nmi])
+                nmi = run_split_test_spectral(emb_dict, group)
+                results.append([db_path, group_size, group_i, f"LSI-{dim}", "spectral", nmi])
             # Doc2Vec
             for dim, emb_dict in d2v_embeddings[db_path].items():
                 nmi = run_split_test(emb_dict, group, normalize=True)
-                results.append([db_path, group_size, group_i, f"D2V-{dim}", nmi])
+                results.append([db_path, group_size, group_i, f"D2V-{dim}", "kmeans", nmi])
+                nmi = run_split_test_spectral(emb_dict, group)
+                results.append([db_path, group_size, group_i, f"D2V-{dim}", "spectral", nmi])
             
             # BERT v0
             emb_v0_dict = bert_v0_embeddings[db_path]
             nmi = run_split_test(emb_v0_dict, group, normalize=False)
-            results.append([db_path, group_size, group_i, "BERT-v0", nmi])
+            results.append([db_path, group_size, group_i, "BERT_v0", "kmeans", nmi])
+            nmi = run_split_test_spectral(emb_v0_dict, group)
+            results.append([db_path, group_size, group_i, "BERT_v0", "spectral", nmi])
             # BERT v0 (normalized)
             nmi = run_split_test(emb_v0_dict, group, normalize=True)
-            results.append([db_path, group_size, group_i, "BERT-v0-normalized", nmi])
+            results.append([db_path, group_size, group_i, "BERT_v0_normalized", "kmeans", nmi])
             
             # BERT v3
             emb_v3_dict = bert_v3_embeddings[db_path]
             nmi = run_split_test(emb_v3_dict, group, normalize=False)
-            results.append([db_path, group_size, group_i, "BERT-v3", nmi])
+            results.append([db_path, group_size, group_i, "BERT_v3", "kmeans", nmi])
+            nmi = run_split_test_spectral(emb_v3_dict, group)
+            results.append([db_path, group_size, group_i, "BERT_v3", "spectral", nmi])
             # BERT v3 (normalized)
             nmi = run_split_test(emb_v3_dict, group, normalize=True)
-            results.append([db_path, group_size, group_i, "BERT-v3-normalized", nmi])
+            results.append([db_path, group_size, group_i, "BERT_v3_normalized", "kmeans", nmi])
             
             # BERT v5
             emb_v5_dict = bert_v5_embeddings[db_path]
             nmi = run_split_test(emb_v5_dict, group, normalize=False)
-            results.append([db_path, group_size, group_i, "BERT-v5", nmi])
+            results.append([db_path, group_size, group_i, "BERT_v5", "kmeans", nmi])
+            nmi = run_split_test_spectral(emb_v5_dict, group)
+            results.append([db_path, group_size, group_i, "BERT_v5", "spectral", nmi])
             # BERT v5 (normalized)
             nmi = run_split_test(emb_v5_dict, group, normalize=True)
-            results.append([db_path, group_size, group_i, "BERT-v5-normalized", nmi])
+            results.append([db_path, group_size, group_i, "BERT_v5_normalized", "kmeans", nmi])
 
 
 print("Collecting results...")
-df = pd.DataFrame(results, columns=["db_path", "group_size", "group_i", "model", "nmi"])
+df = pd.DataFrame(results, columns=["db_path", "group_size", "group_i", "model", "alg", "nmi"])
 print("Writing CSV...")
 df.to_csv(OUTPUT_CSV)
 print("Writing state...")
