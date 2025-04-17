@@ -18,7 +18,7 @@ from concernbert.selection import (
     EntityTree,
     open_db,
 )
-from concernbert.semantic import MyBert, MyCorpus, MyDoc2Vec, MyLsi
+from concernbert.semantic import MyBert, MyCorpus, MyDoc2Vec, MyLda, MyLsi
 
 
 def to_combinations(items: list[str], group_size: int) -> list[list[str]]:
@@ -40,8 +40,8 @@ MODEL_V0 = "_models/CodeBERTa-small-v1"
 MODEL_V3 = "_models/EntityBERT-v3_train_nonldl-lr5e5-2_83-e3"
 MODEL_V5 = "_models/EntityBERT-v5_train_nonldl-lr5e5-2_80-e3-C2"
 CACHE_DIR = "_cache"
-OUTPUT_CSV = "_data/recovery3.csv"
-OUTPUT_STATE = "_data/recovery_state3.pkl"
+OUTPUT_CSV = "_data/recovery5.csv"
+OUTPUT_STATE = "_data/recovery_state5.pkl"
 MAX_PROJECTS = 5
 MAX_FILES_PER_PROJECT = 100
 BATCH_SIZE = 16
@@ -120,6 +120,7 @@ embedder_v3 = load_caching_embedder(MODEL_V3, CACHE_DIR, BATCH_SIZE)
 embedder_v5 = load_caching_embedder(MODEL_V5, CACHE_DIR, BATCH_SIZE)
 
 lsis: dict[str, dict[int, MyLsi]] = defaultdict(dict)
+ldas: dict[str, dict[int, MyLda]] = defaultdict(dict)
 d2vs: dict[str, dict[int, MyDoc2Vec]] = defaultdict(dict)
 bert_v0s: dict[str, MyBert] = dict()
 bert_v3s: dict[str, MyBert] = dict()
@@ -139,6 +140,9 @@ for db_path, group_df in FILES_DF.groupby("db_path"):
         for dim in dims:
             logging.info(f"Running LSI-{dim}...")
             lsis[db_path][dim] = MyLsi(corpus, dim=dim, cache_dir=CACHE_DIR)
+        for dim in dims:
+            logging.info(f"Running LDA-{dim}...")
+            ldas[db_path][dim] = MyLda(corpus, dim=dim, cache_dir=CACHE_DIR)
         for dim in dims:
             logging.info(f"Running D2V-{dim}...")
             d2vs[db_path][dim] = MyDoc2Vec(corpus, dim=dim, cache_dir=CACHE_DIR)
@@ -168,6 +172,7 @@ for db_path, names in filenames.items():
 
 print("Embedding...")
 lsi_embeddings: dict[str, dict[int, dict[str, np.ndarray]]] = dict()
+lda_embeddings: dict[str, dict[int, dict[str, np.ndarray]]] = dict()
 d2v_embeddings: dict[str, dict[int, dict[str, np.ndarray]]] = dict()
 bert_v0_embeddings: dict[str, dict[str, np.ndarray]] = dict()
 bert_v3_embeddings: dict[str, dict[str, np.ndarray]] = dict()
@@ -177,6 +182,7 @@ for db_path, names in filenames.items():
     print()
     print(db_path)
     lsi_embeddings[db_path] = dict()
+    lda_embeddings[db_path] = dict()
     d2v_embeddings[db_path] = dict()
     bert_v0_embeddings[db_path] = dict()
     bert_v3_embeddings[db_path] = dict()
@@ -186,6 +192,11 @@ for db_path, names in filenames.items():
         lsi_embeddings[db_path][dim] = dict()
         for name in names:
             lsi_embeddings[db_path][dim][name] = lsi.embed(name)
+    print("LDA")
+    for dim, lda in ldas[db_path].items():
+        lda_embeddings[db_path][dim] = dict()
+        for name in names:
+            lda_embeddings[db_path][dim][name] = lda.embed(name)
     print("Doc2Vec")
     for dim, d2v in d2vs[db_path].items():
         d2v_embeddings[db_path][dim] = dict()
@@ -229,50 +240,62 @@ for i, (db_path, db_tests) in enumerate(tests.items()):
         for group_i, group in enumerate(groups):
             # LSI
             for dim, emb_dict in lsi_embeddings[db_path].items():
+                nmi = run_split_test(emb_dict, group, normalize=False)
+                results.append([db_path, group_size, group_i, "LSI", str(dim), "kmeans", nmi])
                 nmi = run_split_test(emb_dict, group, normalize=True)
-                results.append([db_path, group_size, group_i, f"LSI-{dim}", "kmeans", nmi])
+                results.append([db_path, group_size, group_i, "LSI", str(dim), "kmeans-sphere", nmi])
                 nmi = run_split_test_spectral(emb_dict, group)
-                results.append([db_path, group_size, group_i, f"LSI-{dim}", "spectral", nmi])
+                results.append([db_path, group_size, group_i, "LSI", str(dim), "spectral", nmi])
+            
+            # LDA
+            for dim, emb_dict in lda_embeddings[db_path].items():
+                nmi = run_split_test(emb_dict, group, normalize=False)
+                results.append([db_path, group_size, group_i, "LDA", str(dim), "kmeans", nmi])
+                nmi = run_split_test(emb_dict, group, normalize=True)
+                results.append([db_path, group_size, group_i, "LDA", str(dim), "kmeans-sphere", nmi])
+                nmi = run_split_test_spectral(emb_dict, group)
+                results.append([db_path, group_size, group_i, "LDA", str(dim), "spectral", nmi])
+            
             # Doc2Vec
             for dim, emb_dict in d2v_embeddings[db_path].items():
+                nmi = run_split_test(emb_dict, group, normalize=False)
+                results.append([db_path, group_size, group_i, "D2V", str(dim), "kmeans", nmi])
                 nmi = run_split_test(emb_dict, group, normalize=True)
-                results.append([db_path, group_size, group_i, f"D2V-{dim}", "kmeans", nmi])
+                results.append([db_path, group_size, group_i, "D2V", str(dim), "kmeans-sphere", nmi])
                 nmi = run_split_test_spectral(emb_dict, group)
-                results.append([db_path, group_size, group_i, f"D2V-{dim}", "spectral", nmi])
+                results.append([db_path, group_size, group_i, "D2V", str(dim), "spectral", nmi])
             
             # BERT v0
             emb_v0_dict = bert_v0_embeddings[db_path]
             nmi = run_split_test(emb_v0_dict, group, normalize=False)
-            results.append([db_path, group_size, group_i, "BERT_v0", "kmeans", nmi])
-            nmi = run_split_test_spectral(emb_v0_dict, group)
-            results.append([db_path, group_size, group_i, "BERT_v0", "spectral", nmi])
-            # BERT v0 (normalized)
+            results.append([db_path, group_size, group_i, "BERTv0", "768", "kmeans", nmi])
             nmi = run_split_test(emb_v0_dict, group, normalize=True)
-            results.append([db_path, group_size, group_i, "BERT_v0_normalized", "kmeans", nmi])
-            
+            results.append([db_path, group_size, group_i, "BERTv0", "768", "kmeans-sphere", nmi])
+            nmi = run_split_test_spectral(emb_v0_dict, group)
+            results.append([db_path, group_size, group_i, "BERTv0", "768", "spectral", nmi])
+
             # BERT v3
             emb_v3_dict = bert_v3_embeddings[db_path]
             nmi = run_split_test(emb_v3_dict, group, normalize=False)
-            results.append([db_path, group_size, group_i, "BERT_v3", "kmeans", nmi])
-            nmi = run_split_test_spectral(emb_v3_dict, group)
-            results.append([db_path, group_size, group_i, "BERT_v3", "spectral", nmi])
-            # BERT v3 (normalized)
+            results.append([db_path, group_size, group_i, "BERTv3", "768", "kmeans", nmi])
             nmi = run_split_test(emb_v3_dict, group, normalize=True)
-            results.append([db_path, group_size, group_i, "BERT_v3_normalized", "kmeans", nmi])
-            
+            results.append([db_path, group_size, group_i, "BERTv3", "768", "kmeans-sphere", nmi])
+            nmi = run_split_test_spectral(emb_v3_dict, group)
+            results.append([db_path, group_size, group_i, "BERTv3", "768", "spectral", nmi])
+
             # BERT v5
             emb_v5_dict = bert_v5_embeddings[db_path]
             nmi = run_split_test(emb_v5_dict, group, normalize=False)
-            results.append([db_path, group_size, group_i, "BERT_v5", "kmeans", nmi])
-            nmi = run_split_test_spectral(emb_v5_dict, group)
-            results.append([db_path, group_size, group_i, "BERT_v5", "spectral", nmi])
-            # BERT v5 (normalized)
+            results.append([db_path, group_size, group_i, "BERTv5", "768", "kmeans", nmi])
             nmi = run_split_test(emb_v5_dict, group, normalize=True)
-            results.append([db_path, group_size, group_i, "BERT_v5_normalized", "kmeans", nmi])
+            results.append([db_path, group_size, group_i, "BERTv5", "768", "kmeans-sphere", nmi])
+            nmi = run_split_test_spectral(emb_v5_dict, group)
+            results.append([db_path, group_size, group_i, "BERTv5", "768", "spectral", nmi])
+
 
 
 print("Collecting results...")
-df = pd.DataFrame(results, columns=["db_path", "group_size", "group_i", "model", "alg", "nmi"])
+df = pd.DataFrame(results, columns=["db_path", "group_size", "group_i", "model", "dim", "alg", "nmi"])
 print("Writing CSV...")
 df.to_csv(OUTPUT_CSV)
 print("Writing state...")
@@ -280,6 +303,7 @@ state = {
     "tests": tests,
     "filenames": filenames,
     "lsi_embeddings": lsi_embeddings,
+    "lda_embeddings": lda_embeddings,
     "d2v_embeddings": d2v_embeddings,
     "bert_v0_embeddings": bert_v0_embeddings,
     "bert_v3_embeddings": bert_v3_embeddings,

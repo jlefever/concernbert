@@ -13,6 +13,7 @@ from gensim.corpora import Dictionary
 from gensim.matutils import sparse2full
 from gensim.models.doc2vec import Doc2Vec, TaggedDocument
 from gensim.models.lsimodel import LsiModel
+from gensim.models.ldamodel import LdaModel
 from nltk.corpus import stopwords
 from nltk.stem.porter import PorterStemmer
 from tree_sitter import Node
@@ -405,7 +406,39 @@ class MyLsi:
         vecs: list[np.ndarray] = []
         for doc_index in self._corpus.get_doc_indices(filename):
             bow = self._to_bow(self._corpus.get_tokens(self._corpus.get_doc(doc_index)))
-            vecs.append(sparse2full(self._lsi[bow], length=self._lsi.num_topics))
+            sparse = self._lsi[bow]
+            vecs.append(sparse2full(sparse, length=self._lsi.num_topics))
+        return np.array(vecs)
+
+    def _to_bow(self, doc: list[str]) -> list[tuple[int, int]]:
+        return self._corpus.vocab.doc2bow(doc)  # type: ignore
+
+
+class MyLda:
+    def __init__(self, corpus: MyCorpus, dim: int, cache_dir: str):
+        self._corpus = corpus
+        cache_path = Path(
+            cache_dir, corpus.name, f"lda-{dim}-{corpus.cache_key()}.model"
+        )
+        if cache_path.exists():
+            self._lda = LdaModel.load(str(cache_path))
+            return
+        self._lda = LdaModel(
+            corpus.corpus, 
+            id2word=corpus.vocab, 
+            num_topics=dim, 
+            iterations=10_000, # From https://ece.uwaterloo.ca/~wshang/pubs/peter_jss2016.pdf
+            random_state=42
+        )
+        cache_path.parent.mkdir(parents=True, exist_ok=True)
+        self._lda.save(str(cache_path))
+
+    def embed(self, filename: str) -> np.ndarray:
+        vecs: list[np.ndarray] = []
+        for doc_index in self._corpus.get_doc_indices(filename):
+            bow = self._to_bow(self._corpus.get_tokens(self._corpus.get_doc(doc_index)))
+            sparse = self._lda.get_document_topics(bow, minimum_probability=0.0)
+            vecs.append(sparse2full(sparse, length=self._lda.num_topics))
         return np.array(vecs)
 
     def _to_bow(self, doc: list[str]) -> list[tuple[int, int]]:
